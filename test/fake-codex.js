@@ -37,6 +37,41 @@ function handle(msg) {
     return;
   }
 
+  if (msg.method === "thread/start") {
+    send({ id: msg.id, result: { threadId: "thread-fake-1" } });
+    return;
+  }
+
+  if (msg.method === "thread/realtime/start") {
+    send({ id: msg.id, result: {} });
+    send({
+      method: "thread/realtime/started",
+      params: { threadId: msg.params.threadId, realtimeSessionId: "rt-1", version: "v2" },
+    });
+    return;
+  }
+
+  if (msg.method === "thread/realtime/appendAudio") {
+    send({ id: msg.id, result: {} });
+    // Echo one chunk back so the relay's outbound audio path is exercised.
+    send({
+      method: "thread/realtime/outputAudio/delta",
+      params: {
+        threadId: msg.params.threadId,
+        audio: {
+          data: Buffer.from(new Int16Array([100, -100, 200]).buffer).toString("base64"),
+          sampleRate: 24000, numChannels: 1, samplesPerChannel: 3, itemId: null,
+        },
+      },
+    });
+    return;
+  }
+
+  if (msg.method === "thread/realtime/stop") {
+    send({ id: msg.id, result: {} });
+    return;
+  }
+
   if (msg.method === "slow") {
     setTimeout(() => send({ id: msg.id, result: { slow: true } }), 40);
     return;

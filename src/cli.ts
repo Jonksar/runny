@@ -3,8 +3,11 @@ import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { startRelay } from "./relay.js";
 import { AppServerClient } from "./appserver.js";
+import { diagnose, renderChecks } from "./doctor.js";
 import { REALTIME_METHODS, type RealtimeVoice, type RealtimeVoicesList } from "./types.js";
 import type { SandboxMode } from "./session.js";
+
+const VERSION = "0.1.0";
 
 interface Args {
   command: string;
@@ -16,11 +19,42 @@ interface Args {
   sandbox: SandboxMode;
   token?: string;
   noToken: boolean;
+  bin?: string;
 }
 
+const HELP = `runny ${VERSION} - vibe code while running
+
+USAGE
+  runny [serve] [options]   Start the relay and serve the phone client
+  runny doctor              Check everything a run needs before you leave
+  runny voices              List the voices your account can use
+
+OPTIONS
+  --cwd <path>      Repository the agent works in     (default: current dir)
+  --port <n>        Port to listen on                 (default: 8765)
+  --host <addr>     Bind address                      (default: 127.0.0.1)
+  --voice <name>    Voice to speak with               (default: marin)
+  --model <name>    Model for the coding agent
+  --sandbox <mode>  read-only | workspace-write | danger-full-access
+                                                      (default: workspace-write)
+  --token <secret>  Require ?token=<secret> on the socket
+  --no-token        Skip the token. Only safe behind Tailscale.
+  --codex-bin <p>   Path to the codex binary          (default: codex on PATH)
+  -h, --help        This text
+  -v, --version     Print the version
+
+REACHING YOUR PHONE
+  tailscale serve --bg 8765
+
+  iOS refuses microphone access and cleartext sockets on non-private
+  addresses, so the tunnel has to terminate TLS. Tailscale issues a real
+  certificate and needs no third party.
+`;
+
 function parseArgs(argv: string[]): Args {
+  const first = argv[0];
   const args: Args = {
-    command: argv[0] && !argv[0].startsWith("-") ? argv[0] : "serve",
+    command: first && !first.startsWith("-") ? first : "serve",
     port: 8765,
     host: "127.0.0.1",
     cwd: process.cwd(),
@@ -40,41 +74,20 @@ function parseArgs(argv: string[]): Args {
       case "--sandbox": if (next) { args.sandbox = next as SandboxMode; i++; } break;
       case "--token": if (next) { args.token = next; i++; } break;
       case "--no-token": args.noToken = true; break;
+      case "--codex-bin": if (next) { args.bin = next; i++; } break;
       case "--help": case "-h": args.command = "help"; break;
+      case "--version": case "-v": args.command = "version"; break;
     }
   }
   return args;
 }
 
-const HELP = `runny - vibe code while running
-
-Usage:
-  runny serve [options]     Start the relay and serve the phone client
-  runny voices              List the voices your account can use
-
-Options:
-  --port <n>        Port to listen on (default 8765)
-  --host <addr>     Bind address (default 127.0.0.1)
-  --cwd <path>      Repository the agent works in (default: current directory)
-  --voice <name>    Voice to speak with (default marin)
-  --model <name>    Model for the coding agent
-  --sandbox <mode>  read-only | workspace-write | danger-full-access
-                    (default workspace-write)
-  --token <secret>  Require ?token=<secret> on the socket
-  --no-token        Run without a token. Only safe behind Tailscale.
-
-Expose it to your phone with:
-  tailscale serve --bg <port>
-`;
-
 async function listVoices(): Promise<void> {
   const client = await AppServerClient.start();
   try {
-    const result = await client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
-    console.log("v2 (default " + result.voices.defaultV2 + "):");
-    console.log("  " + result.voices.v2.join(", "));
-    console.log("v1 (default " + result.voices.defaultV1 + "):");
-    console.log("  " + result.voices.v1.join(", "));
+    const { voices } = await client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
+    console.log(`v2  (default ${voices.defaultV2})\n  ${voices.v2.join(", ")}`);
+    console.log(`v1  (default ${voices.defaultV1})\n  ${voices.v1.join(", ")}`);
   } finally {
     await client.close();
   }
@@ -91,25 +104,17 @@ function lanAddress(): string | null {
 
 async function serve(args: Args): Promise<void> {
   const token = args.noToken ? undefined : args.token ?? randomBytes(16).toString("hex");
+  const handle = await startRelay({ ...args, token });
+  const path = token ? `/?token=${token}` : "/";
 
-  const handle = await startRelay({
-    port: args.port,
-    host: args.host,
-    cwd: args.cwd,
-    voice: args.voice,
-    model: args.model,
-    sandbox: args.sandbox,
-    token,
-  });
-
-  const query = token ? `/?token=${token}` : "/";
-  console.log(`runny listening on http://${args.host}:${args.port}${query}`);
-  console.log(`  repo:    ${args.cwd}`);
-  console.log(`  sandbox: ${args.sandbox}`);
+  console.log(`runny ${VERSION}`);
+  console.log(`  repo     ${args.cwd}`);
+  console.log(`  sandbox  ${args.sandbox}`);
+  console.log(`  local    http://${args.host}:${args.port}${path}`);
   const lan = lanAddress();
-  if (lan) console.log(`  lan:     http://${lan}:${args.port}${query}`);
-  if (!token) console.log("  warning: no token. Anyone who reaches this port can drive your repo.");
-  console.log(`\nExpose it to your phone:  tailscale serve --bg ${args.port}`);
+  if (lan) console.log(`  lan      http://${lan}:${args.port}${path}`);
+  if (!token) console.log("  warning  no token: anyone reaching this port can drive your repo");
+  console.log(`\n  tailscale serve --bg ${args.port}   # then open that URL${path} on your phone`);
 
   const shutdown = () => {
     console.log("\nshutting down");
@@ -125,6 +130,15 @@ switch (args.command) {
   case "help":
     console.log(HELP);
     break;
+  case "version":
+    console.log(VERSION);
+    break;
+  case "doctor": {
+    const checks = await diagnose();
+    console.log(renderChecks(checks));
+    process.exit(checks.some((c) => !c.ok && !c.warning) ? 1 : 0);
+    break;
+  }
   case "voices":
     await listVoices();
     break;

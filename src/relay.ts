@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { RealtimeSession, type SandboxMode } from "./session.js";
-import { decodeClientMessage, encode, type ServerMessage } from "./protocol.js";
+import { decodeClientMessage, encode, type AgentState, type ServerMessage } from "./protocol.js";
 import type { RealtimeVoice } from "./types.js";
 
 const WEB_ROOT = fileURLToPath(new URL("../web", import.meta.url));
@@ -27,6 +27,8 @@ export interface RelayOptions {
   sandbox?: SandboxMode;
   /** Shared secret required as ?token=... on the socket URL. */
   token?: string;
+  /** Path to the codex binary. Defaults to `codex` on PATH. */
+  bin?: string;
 }
 
 export interface RelayHandle {
@@ -77,9 +79,17 @@ async function handleConnection(
   sessions: Set<RealtimeSession>,
 ): Promise<void> {
   let session: RealtimeSession | null = null;
+  let lastState: AgentState | null = null;
 
   const send = (msg: ServerMessage) => {
     if (ws.readyState === ws.OPEN) ws.send(encode(msg));
+  };
+
+  /** Audio deltas arrive many times a second, so only send real transitions. */
+  const setState = (state: AgentState) => {
+    if (state === lastState) return;
+    lastState = state;
+    send({ type: "state", state });
   };
 
   ws.on("message", (data: Buffer, isBinary: boolean) => {
@@ -132,6 +142,7 @@ async function handleConnection(
   ): Promise<void> {
     try {
       const opened = await RealtimeSession.open({
+        bin: options.bin,
         cwd: options.cwd,
         clientSampleRate: sampleRate,
         voice: voice ?? options.voice,
@@ -149,7 +160,11 @@ async function handleConnection(
       });
       opened.on("transcript", (role: "user" | "agent", text: string, done: boolean) => {
         send({ type: "transcript", role, text, done });
+        // The gap between a finished sentence and the first audio frame is
+        // where a runner assumes the thing has died. Name it explicitly.
+        if (role === "user" && done) setState("thinking");
       });
+      opened.on("audio", () => setState("speaking"));
       opened.on("error", (err: Error) => send({ type: "error", message: err.message }));
       opened.on("closed", (reason: string) => {
         send({ type: "error", message: reason });
@@ -162,6 +177,7 @@ async function handleConnection(
         sampleRate,
         voice: voice ?? options.voice ?? "marin",
       });
+      setState("listening");
     } catch (err) {
       send({ type: "error", message: err instanceof Error ? err.message : String(err) });
       ws.close();
