@@ -1,166 +1,104 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { AppServerClient } from "./appserver.js";
+import {
+  AppServerClient,
+  defaultCodexBin,
+  type AppServerOptions,
+} from "./appserver.js";
 import { REALTIME_METHODS, type RealtimeVoicesList } from "./types.js";
-
-const run = promisify(execFile);
-
 export interface Check {
   name: string;
   ok: boolean;
   detail: string;
-  /** A failed check that still lets the rest of the run proceed. */
   warning?: boolean;
 }
-
-interface RateLimitWindow {
-  usedPercent: number;
-  windowDurationMins: number;
-  resetsAt: number;
-}
-
-interface RateLimits {
-  rateLimits: {
-    primary: RateLimitWindow | null;
-    planType: string | null;
-    credits: { hasCredits: boolean; balance: string } | null;
-  };
-  rateLimitsByLimitId?: Record<string, { limitName: string | null; primary: RateLimitWindow | null }>;
-}
-
-function formatReset(epochSeconds: number): string {
-  const ms = epochSeconds * 1000;
-  const hours = (ms - Date.now()) / 3_600_000;
-  const when = new Date(ms).toLocaleString(undefined, {
-    weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-  if (hours < 0) return `${when} (passed)`;
-  if (hours < 48) return `${when}, in ${hours.toFixed(1)}h`;
-  return `${when}, in ${(hours / 24).toFixed(1)} days`;
-}
-
-/**
- * Verify everything a run needs before you are three kilometres from the house.
- *
- * The quota check earns its place: realtime sessions draw on the same weekly
- * allowance as ordinary Codex usage, and a exhausted allowance fails at
- * session start rather than at connect, which looks like a broken relay.
- */
-export async function diagnose(): Promise<Check[]> {
+/** Metadata checks only. This does not open or certify a live voice session. */
+export async function diagnose(
+  options: AppServerOptions = {},
+): Promise<Check[]> {
   const checks: Check[] = [];
-
-  const major = Number(process.versions.node.split(".")[0]);
+  const bin = options.bin ?? defaultCodexBin();
   checks.push({
     name: "node",
-    ok: major >= 22,
-    detail: major >= 22 ? `v${process.versions.node}` : `v${process.versions.node}, needs >= 22`,
+    ok: Number(process.versions.node.split(".")[0]) >= 22,
+    detail: process.version,
   });
-
-  let codexOk = false;
   try {
-    const { stdout } = await run("codex", ["--version"]);
-    codexOk = true;
+    const { stdout } = await promisify(execFile)(bin, ["--version"], {
+      timeout: 5000,
+    });
     checks.push({ name: "codex", ok: true, detail: stdout.trim() });
   } catch {
-    checks.push({ name: "codex", ok: false, detail: "not on PATH, install the Codex CLI" });
-  }
-
-  try {
-    await run("tailscale", ["version"]);
-    checks.push({ name: "tailscale", ok: true, detail: "available for tunnelling" });
-  } catch {
     checks.push({
-      name: "tailscale", ok: false, warning: true,
-      detail: "not found, you will need another HTTPS tunnel to reach a phone",
+      name: "codex",
+      ok: false,
+      detail: "Executable unavailable. Install Codex or use --codex-bin.",
     });
+    return checks;
   }
-
-  if (!codexOk) return checks;
-
-  let client: AppServerClient | null = null;
+  let client: AppServerClient | undefined;
   try {
-    client = await AppServerClient.start();
-
-    const auth = await client
-      .request<{ authMethod?: string; authenticated?: boolean }>("getAuthStatus", {})
+    client = await AppServerClient.start({ ...options, bin });
+    const result = await client.request<{ account: { type: string } | null }>(
+      "account/read",
+      { refreshToken: false },
+    );
+    checks.push({
+      name: "account",
+      ok: result.account?.type === "chatgpt",
+      detail:
+        result.account?.type === "chatgpt"
+          ? "ChatGPT login available; credentials stay with Codex."
+          : "Sign in with ChatGPT using codex login.",
+    });
+    const { voices } = await client.request<RealtimeVoicesList>(
+      REALTIME_METHODS.listVoices,
+      {},
+    );
+    checks.push({
+      name: "protocol",
+      ok: true,
+      detail: `Voice metadata available (${voices.v1.length + voices.v2.length} entries).`,
+    });
+    const limits = await client
+      .request<{
+        rateLimits?: {
+          primary?: { usedPercent: number };
+          secondary?: { usedPercent: number };
+        };
+      }>("account/rateLimits/read", {})
       .catch(() => null);
-    checks.push({
-      name: "auth",
-      ok: auth !== null,
-      detail: auth ? `signed in (${auth.authMethod ?? "chatgpt"})` : "run `codex login`",
-    });
-
-    // The one that actually decides whether a run happens. listVoices is
-    // metadata and answers on ChatGPT auth, but opening a conversation fails
-    // with "realtime conversation requires API key auth" a few seconds after
-    // start, which looks like a hang rather than an auth problem.
-    const apiKey = process.env["OPENAI_API_KEY"];
-    checks.push({
-      name: "api key",
-      ok: Boolean(apiKey),
-      detail: apiKey
-        ? `OPENAI_API_KEY set (${apiKey.slice(0, 6)}...)`
-        : "missing. Realtime refuses ChatGPT auth: set OPENAI_API_KEY or pass --api-key",
-    });
-
-    try {
-      const voices = await client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
+    if (limits?.rateLimits) {
+      const { primary, secondary } = limits.rateLimits;
       checks.push({
-        name: "realtime",
+        name: "usage",
         ok: true,
-        detail: `${voices.voices.v2.length} voices, default ${voices.voices.defaultV2}`,
+        detail: `Current windows used: ${primary?.usedPercent ?? "unknown"}%, ${secondary?.usedPercent ?? "unknown"}%. Voice access is checked when connecting.`,
       });
-    } catch (err) {
-      checks.push({
-        name: "realtime", ok: false,
-        detail: err instanceof Error ? err.message : "realtime unavailable",
-      });
-    }
-
-    const limits = await client.request<RateLimits>("account/rateLimits/read", {}).catch(() => null);
-    if (limits?.rateLimits?.primary) {
-      const p = limits.rateLimits.primary;
-      const spent = p.usedPercent >= 100;
-      const credits = limits.rateLimits.credits;
-      const hasCredits = credits?.hasCredits === true;
-      checks.push({
-        name: "quota",
-        ok: !spent || hasCredits,
-        detail: spent
-          ? `${p.usedPercent}% used on plan ${limits.rateLimits.planType ?? "?"}, resets ${formatReset(p.resetsAt)}`
-          : `${p.usedPercent}% used, window resets ${formatReset(p.resetsAt)}`,
-      });
-
-      if (spent) {
-        for (const [id, entry] of Object.entries(limits.rateLimitsByLimitId ?? {})) {
-          if (entry.primary && entry.primary.usedPercent < 100 && id !== "codex") {
-            checks.push({
-              name: "quota alt", ok: true, warning: true,
-              detail: `${entry.limitName ?? id} has ${100 - entry.primary.usedPercent}% left, try --model`,
-            });
-          }
-        }
-      }
     }
   } catch (err) {
     checks.push({
-      name: "app-server", ok: false,
-      detail: err instanceof Error ? err.message : "could not start codex app-server",
+      name: "app-server",
+      ok: false,
+      detail: err instanceof Error ? err.message : "Connection failed",
     });
   } finally {
     await client?.close();
   }
-
+  checks.push({
+    name: "voice",
+    ok: false,
+    warning: true,
+    detail:
+      "Not tested by doctor. Start a short call before relying on this outdoors.",
+  });
   return checks;
 }
-
 export function renderChecks(checks: Check[]): string {
-  const lines = checks.map((c) => {
-    const mark = c.ok ? "ok  " : c.warning ? "warn" : "FAIL";
-    return `  [${mark}] ${c.name.padEnd(10)} ${c.detail}`;
-  });
-  const blocking = checks.filter((c) => !c.ok && !c.warning);
-  lines.push("");
-  lines.push(blocking.length === 0 ? "ready to run" : `${blocking.length} blocking problem(s)`);
-  return lines.join("\n");
+  return checks
+    .map(
+      (c) =>
+        `  [${c.ok ? "ok" : c.warning ? "warn" : "FAIL"}] ${c.name}: ${c.detail}`,
+    )
+    .join("\n");
 }

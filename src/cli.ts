@@ -1,156 +1,144 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
-import { networkInterfaces } from "node:os";
-import { startRelay } from "./relay.js";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { startRelay, type RelayOptions } from "./relay.js";
 import { AppServerClient } from "./appserver.js";
 import { diagnose, renderChecks } from "./doctor.js";
-import { REALTIME_METHODS, type RealtimeVoice, type RealtimeVoicesList } from "./types.js";
-import type { SandboxMode } from "./session.js";
+import { DEFAULT_MODEL } from "./session.js";
+import { REALTIME_METHODS, type RealtimeVoicesList } from "./types.js";
+const VERSION = "0.2.0";
+const HELP = `runny ${VERSION} - talk to Codex from your phone
 
-const VERSION = "0.1.0";
+Usage: runny [serve | doctor | voices] [options]
 
-interface Args {
-  command: string;
-  port: number;
-  host: string;
-  cwd: string;
-  voice?: RealtimeVoice;
-  model?: string;
-  sandbox: SandboxMode;
-  token?: string;
-  noToken: boolean;
-  bin?: string;
-  apiKey?: string;
-}
+  --cwd <path>       Working repository, defaults to current directory
+  --model <name>     Coding orchestrator, defaults to ${DEFAULT_MODEL}
+  --voice <name>     Optional voice override, defaults to Codex selection
+  --sandbox <mode>   read-only | workspace-write | danger-full-access
+                     Defaults to workspace-write, interactive approvals disabled
+  --port <number>    Listen port, defaults to 8765
+  --host <address>   Bind address, defaults to 127.0.0.1
+  --token <secret>   Shared access token, randomly generated when omitted
+  --codex-bin <path> Codex executable, prefers installed macOS desktop binary
+  -h, --help        Show help
+  -v, --version     Show version
 
-const HELP = `runny ${VERSION} - vibe code while running
-
-USAGE
-  runny [serve] [options]   Start the relay and serve the phone client
-  runny doctor              Check everything a run needs before you leave
-  runny voices              List the voices your account can use
-
-OPTIONS
-  --cwd <path>      Repository the agent works in     (default: current dir)
-  --port <n>        Port to listen on                 (default: 8765)
-  --host <addr>     Bind address                      (default: 127.0.0.1)
-  --voice <name>    Voice to speak with               (default: marin)
-  --model <name>    Model for the coding agent
-  --sandbox <mode>  read-only | workspace-write | danger-full-access
-                                                      (default: workspace-write)
-  --token <secret>  Require ?token=<secret> on the socket
-  --no-token        Skip the token. Only safe behind Tailscale.
-  --codex-bin <p>   Path to the codex binary          (default: codex on PATH)
-  --api-key <key>   OpenAI API key                    (default: $OPENAI_API_KEY)
-                    Required. Realtime refuses ChatGPT auth.
-  -h, --help        This text
-  -v, --version     Print the version
-
-REACHING YOUR PHONE
-  tailscale serve --bg 8765
-
-  iOS refuses microphone access and cleartext sockets on non-private
-  addresses, so the tunnel has to terminate TLS. Tailscale issues a real
-  certificate and needs no third party.
+Install: npm install -g github:Jonksar/runny
+Phone: tailscale serve --bg 8765, then open its HTTPS URL with the printed token.
+ChatGPT login stays in Codex. Runny does not need an OpenAI API key.
+Doctor reads metadata only; it does not confirm live voice access.
 `;
 
-function parseArgs(argv: string[]): Args {
-  const first = argv[0];
-  const args: Args = {
-    command: first && !first.startsWith("-") ? first : "serve",
+async function main(argv: string[]): Promise<void> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(HELP);
+    return;
+  }
+  if (argv.includes("--version") || argv.includes("-v")) {
+    console.log(VERSION);
+    return;
+  }
+  const args: RelayOptions = {
     port: 8765,
     host: "127.0.0.1",
     cwd: process.cwd(),
     sandbox: "workspace-write",
-    noToken: false,
+    model: DEFAULT_MODEL,
   };
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const next = argv[i + 1];
-    switch (arg) {
-      case "--port": if (next) { args.port = Number(next); i++; } break;
-      case "--host": if (next) { args.host = next; i++; } break;
-      case "--cwd": if (next) { args.cwd = next; i++; } break;
-      case "--voice": if (next) { args.voice = next as RealtimeVoice; i++; } break;
-      case "--model": if (next) { args.model = next; i++; } break;
-      case "--sandbox": if (next) { args.sandbox = next as SandboxMode; i++; } break;
-      case "--token": if (next) { args.token = next; i++; } break;
-      case "--no-token": args.noToken = true; break;
-      case "--codex-bin": if (next) { args.bin = next; i++; } break;
-      case "--api-key": if (next) { args.apiKey = next; i++; } break;
-      case "--help": case "-h": args.command = "help"; break;
-      case "--version": case "-v": args.command = "version"; break;
+  const command = argv[0] && !argv[0].startsWith("-") ? argv.shift() : "serve";
+  if (!["serve", "doctor", "voices"].includes(command!))
+    throw new Error(`Unknown command: ${command}`);
+  for (let i = 0; i < argv.length; i += 2) {
+    const flag = argv[i];
+    const value = argv[i + 1];
+    if (!value || value.startsWith("--"))
+      throw new Error(`Missing value for ${flag}`);
+    switch (flag) {
+      case "--cwd":
+        args.cwd = resolve(value);
+        break;
+      case "--port":
+        args.port = Number(value);
+        break;
+      case "--host":
+        args.host = value;
+        break;
+      case "--model":
+        args.model = value;
+        break;
+      case "--voice":
+        args.voice = value;
+        break;
+      case "--token":
+        args.token = value;
+        break;
+      case "--codex-bin":
+        args.bin = value;
+        break;
+      case "--sandbox":
+        if (
+          !["read-only", "workspace-write", "danger-full-access"].includes(
+            value,
+          )
+        )
+          throw new Error("Invalid sandbox");
+        args.sandbox = value as RelayOptions["sandbox"];
+        break;
+      default:
+        throw new Error(`Unknown option: ${flag}`);
     }
   }
-  return args;
-}
-
-async function listVoices(): Promise<void> {
-  const client = await AppServerClient.start();
-  try {
-    const { voices } = await client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
-    console.log(`v2  (default ${voices.defaultV2})\n  ${voices.v2.join(", ")}`);
-    console.log(`v1  (default ${voices.defaultV1})\n  ${voices.v1.join(", ")}`);
-  } finally {
-    await client.close();
-  }
-}
-
-function lanAddress(): string | null {
-  for (const addrs of Object.values(networkInterfaces())) {
-    for (const addr of addrs ?? []) {
-      if (addr.family === "IPv4" && !addr.internal) return addr.address;
-    }
-  }
-  return null;
-}
-
-async function serve(args: Args): Promise<void> {
-  const token = args.noToken ? undefined : args.token ?? randomBytes(16).toString("hex");
-  const handle = await startRelay({ ...args, token });
-  const path = token ? `/?token=${token}` : "/";
-
-  console.log(`runny ${VERSION}`);
-  console.log(`  repo     ${args.cwd}`);
-  console.log(`  sandbox  ${args.sandbox}`);
-  console.log(`  local    http://${args.host}:${args.port}${path}`);
-  const lan = lanAddress();
-  if (lan) console.log(`  lan      http://${lan}:${args.port}${path}`);
-  if (!token) console.log("  warning  no token: anyone reaching this port can drive your repo");
-  console.log(`\n  tailscale serve --bg ${args.port}   # then open that URL${path} on your phone`);
-
-  const shutdown = () => {
-    console.log("\nshutting down");
-    void handle.close().then(() => process.exit(0));
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-}
-
-const args = parseArgs(process.argv.slice(2));
-
-switch (args.command) {
-  case "help":
-    console.log(HELP);
-    break;
-  case "version":
-    console.log(VERSION);
-    break;
-  case "doctor": {
-    const checks = await diagnose();
+  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535)
+    throw new Error("Port must be an integer from 1 to 65535");
+  if (!(await stat(args.cwd)).isDirectory())
+    throw new Error("Working directory must be a directory");
+  if (command === "doctor") {
+    const checks = await diagnose(args);
     console.log(renderChecks(checks));
-    process.exit(checks.some((c) => !c.ok && !c.warning) ? 1 : 0);
-    break;
+    if (checks.some((c) => !c.ok && !c.warning)) process.exitCode = 1;
+    return;
   }
-  case "voices":
-    await listVoices();
-    break;
-  case "serve":
-    await serve(args);
-    break;
-  default:
-    console.error(`unknown command: ${args.command}\n`);
-    console.log(HELP);
-    process.exit(1);
+  if (command === "voices") {
+    const client = await AppServerClient.start(args);
+    try {
+      const { voices } = await client.request<RealtimeVoicesList>(
+        REALTIME_METHODS.listVoices,
+        {},
+      );
+      console.log(
+        `Codex voice metadata\nv1: ${voices.v1.join(", ")}\nv2: ${voices.v2.join(", ")}\nRunny uses v3 with the Codex default unless --voice is set.`,
+      );
+    } finally {
+      await client.close();
+    }
+    return;
+  }
+  args.token ??= randomBytes(24).toString("hex");
+  const handle = await startRelay(args);
+  const hostname = args.host.includes(":") ? `[${args.host}]` : args.host;
+  console.log(
+    `runny ${VERSION}\nRepository: ${args.cwd}\nCoding model: ${args.model}\nSandbox: ${args.sandbox}`,
+  );
+  console.log(
+    `Open: http://${hostname}:${args.port}/#token=${encodeURIComponent(args.token)}`,
+  );
+  console.log(
+    `Phone: tailscale serve --bg ${args.port}\nAppend /#token=${encodeURIComponent(args.token)} to its HTTPS URL.`,
+  );
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    void handle.close().catch((err) => {
+      console.error(err.message);
+      process.exitCode = 1;
+    });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
 }
+void main(process.argv.slice(2)).catch((err) => {
+  console.error(`runny: ${err.message}`);
+  process.exitCode = 1;
+});

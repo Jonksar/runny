@@ -1,188 +1,178 @@
 import { EventEmitter } from "node:events";
 import { AppServerClient, type AppServerOptions } from "./appserver.js";
-import { base64ToPcm16, pcm16ToBase64, resamplePcm16 } from "./audio.js";
-import {
-  REALTIME_METHODS,
-  REALTIME_NOTIFICATIONS,
-  type RealtimeVoice,
-  type RealtimeVoicesList,
-  type ThreadRealtimeAudioChunk,
-  type ThreadRealtimeOutputAudioDeltaNotification,
-  type RealtimeOutputModality,
-  type ThreadRealtimeStartedNotification,
-} from "./types.js";
+import { REALTIME_METHODS } from "./types.js";
 
-export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type SandboxMode =
+  | "read-only"
+  | "workspace-write"
+  | "danger-full-access";
+export const DEFAULT_MODEL = "gpt-6-astra";
 
 export interface SessionOptions extends AppServerOptions {
-  voice?: RealtimeVoice;
+  sdp: string;
   model?: string;
-  /**
-   * Defaults to workspace-write. You cannot tap approve while running, so the
-   * sandbox is the only thing standing between a misheard sentence and your
-   * working tree. Widen it deliberately or not at all.
-   */
+  voice?: string;
   sandbox?: SandboxMode;
-  /** Sample rate the phone is sending and expects back. */
-  clientSampleRate: number;
-  /** `text` skips speech synthesis, which is cheaper when you only want transcripts. */
-  outputModality?: RealtimeOutputModality;
-  /** Spoken by the agent when the session opens. */
-  startInstructions?: string;
-  prompt?: string;
+  startupTimeoutMs?: number;
+  signal?: AbortSignal;
 }
 
-export interface SessionEvents {
-  audio: (pcm: Int16Array, sampleRate: number) => void;
-  transcript: (role: "user" | "agent", text: string, done: boolean) => void;
-  closed: (reason: string) => void;
-  error: (err: Error) => void;
-}
-
-const DEFAULT_START_INSTRUCTIONS = [
-  "You are being spoken to by someone who is running, outdoors, at pace.",
-  "They cannot look at a screen and cannot type.",
-  "Keep every reply under two sentences unless they ask for detail.",
-  "Never read code, diffs, file paths, or tables aloud. Summarise them instead.",
-  "Delegate all real work to the coding agent rather than answering from memory.",
+const INSTRUCTIONS = [
+  "You are the backend coding executor for a hands-free voice conversation.",
+  "Perform the requested work with your tools and report actual results.",
+  "Prefix progress messages with [COMMENTARY] and the final result with [FINAL].",
+  "Keep replies to two short sentences unless the user asks for detail.",
+  "Do not claim work or tests succeeded before verifying them.",
 ].join(" ");
 
-/**
- * One realtime voice conversation bound to one Codex thread.
- *
- * Codex owns the hard parts: the model connection, reconnect backoff, and the
- * handoff to the coding agent. This class only moves audio across the boundary
- * and resamples it, since the phone and the model rarely agree on a rate.
- */
+/** A Codex thread plus its WebRTC signaling session. Audio stays off the relay. */
 export class RealtimeSession extends EventEmitter {
+  readonly threadId: string;
+  sdp = "";
   #client: AppServerClient;
-  #threadId: string;
-  #clientRate: number;
-  #modelRate: number | null = null;
-  #stopped = false;
+  #closing: Promise<void> | null = null;
+  #fault: Error | null = null;
 
-  private constructor(client: AppServerClient, threadId: string, clientRate: number) {
+  private constructor(client: AppServerClient, threadId: string) {
     super();
     this.#client = client;
-    this.#threadId = threadId;
-    this.#clientRate = clientRate;
-    this.#wire();
+    this.threadId = threadId;
+    client.on(
+      "notification",
+      (method: string, params: Record<string, unknown> | undefined) => {
+        if (!params || params.threadId !== threadId) return;
+        if (
+          method === "thread/realtime/sdp" &&
+          typeof params.sdp === "string"
+        ) {
+          this.sdp = params.sdp;
+          this.emit("sdp", this.sdp);
+          return;
+        }
+        if (method === "thread/realtime/error" || method === "error") {
+          this.#fail(
+            new Error(
+              typeof params.message === "string"
+                ? params.message
+                : "Codex reported an error",
+            ),
+          );
+          return;
+        }
+        if (method === "thread/realtime/closed")
+          this.#fail(new Error("Codex closed the voice session"));
+      },
+    );
+    client.on("exit", () => {
+      if (!this.#closing) this.#fail(new Error("Codex app-server exited"));
+    });
+    client.on("requestDenied", () =>
+      this.#fail(
+        new Error("Codex needs interactive input. Continue this task locally."),
+      ),
+    );
   }
 
-  get threadId(): string {
-    return this.#threadId;
+  #fail(err: Error): void {
+    if (this.#fault || this.#closing) return;
+    this.#fault = err;
+    this.emit("fault", err);
+  }
+
+  get failure(): Error | null {
+    return this.#fault;
   }
 
   static async open(options: SessionOptions): Promise<RealtimeSession> {
+    options.signal?.throwIfAborted();
+    if (!options.sdp.startsWith("v=0"))
+      throw new Error("A WebRTC SDP offer is required");
     const client = await AppServerClient.start(options);
-
-    const thread = await client.request<{ threadId?: string; thread?: { id?: string } }>(
-      "thread/start",
-      {
-        cwd: options.cwd ?? process.cwd(),
-        sandbox: options.sandbox ?? "workspace-write",
-        ...(options.model ? { model: options.model } : {}),
-      },
-    );
-
-    const threadId = thread.threadId ?? thread.thread?.id;
-    if (!threadId) {
-      await client.close();
-      throw new Error("thread/start returned no threadId");
-    }
-
-    const session = new RealtimeSession(client, threadId, options.clientSampleRate);
-
-    await client.request(REALTIME_METHODS.start, {
-      threadId,
-      transport: { type: "websocket" },
-      outputModality: options.outputModality ?? "audio",
-      voice: options.voice ?? "marin",
-      realtimeStartInstructions: options.startInstructions ?? DEFAULT_START_INSTRUCTIONS,
-      ...(options.prompt ? { prompt: options.prompt } : {}),
-    });
-
-    return session;
-  }
-
-  #wire(): void {
-    this.#client.on(REALTIME_NOTIFICATIONS.started, (params: unknown) => {
-      const p = params as ThreadRealtimeStartedNotification;
-      this.emit("started", p.realtimeSessionId, p.version);
-    });
-
-    this.#client.on(REALTIME_NOTIFICATIONS.outputAudioDelta, (params: unknown) => {
-      const p = params as ThreadRealtimeOutputAudioDeltaNotification;
-      if (p.threadId !== this.#threadId) return;
-      this.#modelRate = p.audio.sampleRate;
-      const pcm = base64ToPcm16(p.audio.data);
-      const out = resamplePcm16(pcm, p.audio.sampleRate, this.#clientRate);
-      this.emit("audio", out, this.#clientRate);
-    });
-
-    this.#client.on(REALTIME_NOTIFICATIONS.transcriptDelta, (params: unknown) => {
-      const p = params as { threadId: string; delta: string; role?: string };
-      if (p.threadId !== this.#threadId) return;
-      this.emit("transcript", p.role === "user" ? "user" : "agent", p.delta, false);
-    });
-
-    this.#client.on(REALTIME_NOTIFICATIONS.transcriptDone, (params: unknown) => {
-      const p = params as { threadId: string; text: string; role?: string };
-      if (p.threadId !== this.#threadId) return;
-      this.emit("transcript", p.role === "user" ? "user" : "agent", p.text, true);
-    });
-
-    this.#client.on(REALTIME_NOTIFICATIONS.error, (params: unknown) => {
-      const p = params as { message?: string };
-      this.emit("error", new Error(p.message ?? "realtime error"));
-    });
-
-    this.#client.on(REALTIME_NOTIFICATIONS.closed, () => {
-      this.#stopped = true;
-      this.emit("closed", "remote closed the realtime session");
-    });
-  }
-
-  /** Push microphone audio. Resampled to whatever rate the model last used. */
-  async appendAudio(pcm: Int16Array): Promise<void> {
-    if (this.#stopped || pcm.length === 0) return;
-    const targetRate = this.#modelRate ?? this.#clientRate;
-    const resampled = resamplePcm16(pcm, this.#clientRate, targetRate);
-    const audio: ThreadRealtimeAudioChunk = {
-      data: pcm16ToBase64(resampled),
-      sampleRate: targetRate,
-      numChannels: 1,
-      samplesPerChannel: resampled.length,
-      itemId: null,
+    let session: RealtimeSession | undefined;
+    const abort = () => {
+      void client.close();
     };
-    await this.#client.request(REALTIME_METHODS.appendAudio, { threadId: this.#threadId, audio });
-  }
-
-  /** Inject typed text as if it had been spoken. */
-  async appendText(text: string): Promise<void> {
-    if (this.#stopped) return;
-    await this.#client.request(REALTIME_METHODS.appendText, { threadId: this.#threadId, text });
-  }
-
-  /** Speak text verbatim without asking the model. */
-  async speak(text: string): Promise<void> {
-    if (this.#stopped) return;
-    await this.#client.request(REALTIME_METHODS.appendSpeech, { threadId: this.#threadId, text });
-  }
-
-  async listVoices(): Promise<RealtimeVoicesList> {
-    return this.#client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
-  }
-
-  async close(): Promise<void> {
-    if (!this.#stopped) {
-      this.#stopped = true;
-      try {
-        await this.#client.request(REALTIME_METHODS.stop, { threadId: this.#threadId });
-      } catch {
-        // The session may already be gone. Tearing down is best effort.
-      }
+    options.signal?.addEventListener("abort", abort, { once: true });
+    try {
+      options.signal?.throwIfAborted();
+      const { thread } = await client.request<{ thread: { id: string } }>(
+        "thread/start",
+        {
+          cwd: options.cwd ?? process.cwd(),
+          model: options.model ?? DEFAULT_MODEL,
+          sandbox: options.sandbox ?? "workspace-write",
+          approvalPolicy: "never",
+        },
+      );
+      if (!thread?.id) throw new Error("thread/start returned no thread id");
+      session = new RealtimeSession(client, thread.id);
+      const opened = session;
+      await new Promise<void>((resolve, reject) => {
+        const finish = (err?: Error) => {
+          clearTimeout(timer);
+          opened.off("sdp", answer);
+          opened.off("fault", fault);
+          options.signal?.removeEventListener("abort", cancelled);
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        };
+        const answer = () => finish();
+        const fault = (err: Error) => finish(err);
+        const cancelled = () => finish(new Error("Voice startup aborted"));
+        const timer = setTimeout(
+          () => finish(new Error("WebRTC SDP answer timed out")),
+          options.startupTimeoutMs ?? 30_000,
+        );
+        opened.once("sdp", answer);
+        opened.once("fault", fault);
+        options.signal?.addEventListener("abort", cancelled, { once: true });
+        if (options.signal?.aborted) {
+          cancelled();
+          return;
+        }
+        void client
+          .request(REALTIME_METHODS.start, {
+            threadId: opened.threadId,
+            transport: { type: "webrtc", sdp: options.sdp },
+            version: "v3",
+            outputModality: "audio",
+            // The default thinking mode adds results as context without asking
+            // voice to speak. Route completed coding replies to speech instead.
+            codexResponseHandoffMode: "bemTags",
+            realtimeStartInstructions: INSTRUCTIONS,
+            ...(options.voice ? { voice: options.voice } : {}),
+          })
+          .catch(fault);
+      });
+      options.signal?.throwIfAborted();
+      if (opened.failure) throw opened.failure;
+      return opened;
+    } catch (err) {
+      await (session ? session.close() : client.close());
+      options.signal?.throwIfAborted();
+      throw err;
+    } finally {
+      options.signal?.removeEventListener("abort", abort);
     }
-    await this.#client.close();
+  }
+
+  /** Add context. V3 does not treat appendText as a spoken user turn. */
+  async appendText(text: string): Promise<void> {
+    if (this.#closing || this.#fault)
+      throw new Error("Voice session is closed");
+    if (!text.trim()) return;
+    await this.#client.request(REALTIME_METHODS.appendText, {
+      threadId: this.threadId,
+      text,
+    });
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closing = this.#client.close();
+    return this.#closing;
   }
 }

@@ -62,7 +62,7 @@ test("notifications reach both the generic and per-method listener", async () =>
   try {
     const seen = await new Promise((resolve) => {
       client.once("remoteControl/status/changed", (params) => resolve(params));
-      client.request("thread/realtime/listVoices", {}).catch(() => {});
+      client.request("notify", {}).catch(() => {});
     });
     assert.deepEqual(seen, { status: "disabled" });
   } finally {
@@ -73,5 +73,42 @@ test("notifications reach both the generic and per-method listener", async () =>
 test("requests after close are rejected rather than hanging", async () => {
   const client = await start();
   await client.close();
-  await assert.rejects(() => client.request("thread/realtime/listVoices", {}), /closed/);
+  await assert.rejects(
+    () => client.request("thread/realtime/listVoices", {}),
+    /closed/,
+  );
+});
+
+test("missing executable rejects startup without crashing", async () => {
+  await assert.rejects(
+    AppServerClient.start({ bin: "/nonexistent/runny-codex" }),
+    /ENOENT/,
+  );
+});
+
+test("unanswered requests time out and the client remains usable", async () => {
+  const client = await AppServerClient.start({
+    bin: FAKE,
+    requestTimeoutMs: 1000,
+  });
+  try {
+    await assert.rejects(client.request("no-response"), /timed out/);
+    assert.equal(
+      (await client.request("thread/realtime/listVoices")).voices.defaultV1,
+      "cove",
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("server requests cannot masquerade as responses with the same id", async () => {
+  const client = await start();
+  try {
+    assert.deepEqual(await client.request("approval-collision"), {
+      safe: true,
+    });
+  } finally {
+    await client.close();
+  }
 });
