@@ -29,6 +29,8 @@ export interface RelayOptions {
   token?: string;
   /** Path to the codex binary. Defaults to `codex` on PATH. */
   bin?: string;
+  /** OpenAI API key. Realtime refuses ChatGPT auth. */
+  apiKey?: string;
 }
 
 export interface RelayHandle {
@@ -138,6 +140,7 @@ async function handleConnection(
     try {
       const opened = await RealtimeSession.open({
         bin: options.bin,
+        apiKey: options.apiKey,
         cwd: options.cwd,
         clientSampleRate: sampleRate,
         voice: voice ?? options.voice,

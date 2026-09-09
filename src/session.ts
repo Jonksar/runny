@@ -8,6 +8,7 @@ import {
   type RealtimeVoicesList,
   type ThreadRealtimeAudioChunk,
   type ThreadRealtimeOutputAudioDeltaNotification,
+  type RealtimeOutputModality,
   type ThreadRealtimeStartedNotification,
 } from "./types.js";
 
@@ -24,6 +25,8 @@ export interface SessionOptions extends AppServerOptions {
   sandbox?: SandboxMode;
   /** Sample rate the phone is sending and expects back. */
   clientSampleRate: number;
+  /** `text` skips speech synthesis, which is cheaper when you only want transcripts. */
+  outputModality?: RealtimeOutputModality;
   /** Spoken by the agent when the session opens. */
   startInstructions?: string;
   prompt?: string;
@@ -92,7 +95,8 @@ export class RealtimeSession extends EventEmitter {
 
     await client.request(REALTIME_METHODS.start, {
       threadId,
-      transport: "websocket",
+      transport: { type: "websocket" },
+      outputModality: options.outputModality ?? "audio",
       voice: options.voice ?? "marin",
       realtimeStartInstructions: options.startInstructions ?? DEFAULT_START_INSTRUCTIONS,
       ...(options.prompt ? { prompt: options.prompt } : {}),

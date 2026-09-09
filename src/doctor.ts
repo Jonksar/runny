@@ -90,6 +90,19 @@ export async function diagnose(): Promise<Check[]> {
       detail: auth ? `signed in (${auth.authMethod ?? "chatgpt"})` : "run `codex login`",
     });
 
+    // The one that actually decides whether a run happens. listVoices is
+    // metadata and answers on ChatGPT auth, but opening a conversation fails
+    // with "realtime conversation requires API key auth" a few seconds after
+    // start, which looks like a hang rather than an auth problem.
+    const apiKey = process.env["OPENAI_API_KEY"];
+    checks.push({
+      name: "api key",
+      ok: Boolean(apiKey),
+      detail: apiKey
+        ? `OPENAI_API_KEY set (${apiKey.slice(0, 6)}...)`
+        : "missing. Realtime refuses ChatGPT auth: set OPENAI_API_KEY or pass --api-key",
+    });
+
     try {
       const voices = await client.request<RealtimeVoicesList>(REALTIME_METHODS.listVoices, {});
       checks.push({

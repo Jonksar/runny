@@ -20,6 +20,7 @@ interface Args {
   token?: string;
   noToken: boolean;
   bin?: string;
+  apiKey?: string;
 }
 
 const HELP = `runny ${VERSION} - vibe code while running
@@ -40,6 +41,8 @@ OPTIONS
   --token <secret>  Require ?token=<secret> on the socket
   --no-token        Skip the token. Only safe behind Tailscale.
   --codex-bin <p>   Path to the codex binary          (default: codex on PATH)
+  --api-key <key>   OpenAI API key                    (default: $OPENAI_API_KEY)
+                    Required. Realtime refuses ChatGPT auth.
   -h, --help        This text
   -v, --version     Print the version
 
@@ -75,6 +78,7 @@ function parseArgs(argv: string[]): Args {
       case "--token": if (next) { args.token = next; i++; } break;
       case "--no-token": args.noToken = true; break;
       case "--codex-bin": if (next) { args.bin = next; i++; } break;
+      case "--api-key": if (next) { args.apiKey = next; i++; } break;
       case "--help": case "-h": args.command = "help"; break;
       case "--version": case "-v": args.command = "version"; break;
     }

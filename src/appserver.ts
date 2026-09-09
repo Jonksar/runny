@@ -21,6 +21,12 @@ export interface AppServerOptions {
   features?: string[];
   /** Client name reported in the handshake. */
   clientName?: string;
+  /**
+   * OpenAI API key for the spawned server. Realtime conversations refuse
+   * ChatGPT auth with "realtime conversation requires API key auth", so
+   * without this a session opens and then closes on you.
+   */
+  apiKey?: string;
 }
 
 interface PendingCall {
@@ -67,9 +73,11 @@ export class AppServerClient extends EventEmitter {
     for (const f of features) args.push("--enable", f);
     args.push("app-server");
 
+    const apiKey = options.apiKey ?? process.env["OPENAI_API_KEY"];
     const proc = spawn(options.bin ?? "codex", args, {
       cwd: options.cwd ?? process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
+      env: apiKey ? { ...process.env, OPENAI_API_KEY: apiKey } : process.env,
     }) as ChildProcessWithoutNullStreams;
 
     const client = new AppServerClient(proc);
@@ -119,7 +127,10 @@ export class AppServerClient extends EventEmitter {
 
     if (typeof msg["method"] === "string") {
       this.emit("notification", msg["method"], msg["params"]);
-      this.emit(msg["method"], msg["params"]);
+      // The server sends notifications whose method is literally "error".
+      // EventEmitter treats an "error" event with no listener as fatal and
+      // throws, so route it somewhere that cannot take down the process.
+      this.emit(msg["method"] === "error" ? "serverError" : msg["method"], msg["params"]);
     }
   }
 

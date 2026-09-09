@@ -13,7 +13,16 @@ export type RealtimeVoice =
   | "shimmer" | "sol" | "spruce" | "vale" | "verse";
 
 export type RealtimeConversationVersion = "v1" | "v2" | "v3";
-export type RealtimeTransport = "websocket" | "webrtc";
+export type RealtimeOutputModality = "text" | "audio";
+
+/**
+ * Internally tagged on `type`. A bare string is rejected with
+ * `invalid type: string "websocket", expected internally tagged enum`,
+ * and `outputModality` is required rather than defaulted.
+ */
+export type RealtimeTransport =
+  | { type: "websocket" }
+  | { type: "webrtc"; sdp: string };
 
 /** Self-describing audio payload. `data` is base64 PCM16. */
 export interface ThreadRealtimeAudioChunk {
@@ -27,14 +36,14 @@ export interface ThreadRealtimeAudioChunk {
 export interface RealtimeStartParams {
   threadId: string;
   transport: RealtimeTransport;
+  /** Required. `text` skips speech synthesis entirely. */
+  outputModality: RealtimeOutputModality;
   voice?: RealtimeVoice;
   /** Spoken to the model when the session opens. */
   realtimeStartInstructions?: string;
   /** Spoken to the model when the session is torn down. */
   realtimeEndInstructions?: string;
   prompt?: string;
-  /** WebRTC only: the local offer. Leave unset for websocket transport. */
-  sdp?: string;
   realtimeSessionId?: string;
 }
 
