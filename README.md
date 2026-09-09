@@ -1,12 +1,20 @@
 # runny
 
-**Talk to Codex from your phone. Keep running while it works.**
+**Vibe code while running.**
+
+Going outside was supposed to help.
 
 Runny connects your phone's microphone and headphones to Codex voice. Codex hands coding work to a GPT-6 Astra thread on your computer and brings the results back into the conversation.
 
 Audio travels directly over WebRTC. Your computer handles signaling and coding. Your ChatGPT login stays in Codex; Runny needs no OpenAI API key.
 
 [Setup](#setup) · [Commands](#commands) · [How it works](docs/architecture.md) · [Protocol](docs/protocol.md) · [Test evidence](docs/testing.md)
+
+An example request:
+
+> "Find out why the login test is failing. Fix it, run the tests, and give me the short version."
+
+Codex works in the chosen repository and reports back by voice. Review the changes when you return.
 
 ## Setup
 
@@ -66,6 +74,12 @@ Runny adds no paid relay service. Voice and coding remain subject to your accoun
 The implementation uses the experimental Codex app-server WebRTC v3 interface, tested with Codex **0.153.4**. Older builds may expose the same methods but use an obsolete voice model. `runny voices` lists metadata, not a guarantee that each voice works with v3.
 
 This is a browser call to Codex. It does not inject audio into an already-open desktop voice call, integrate with ChatGPT mobile voice, or provide a telephone number. Those approaches motivated the project; the smaller direct WebRTC connection is implemented here.
+
+## Tested so far
+
+In a live test, a spoken request had Astra read a real file. The browser received and played the correct spoken answer. Automated tests cover the protocol, access controls, session cleanup, and browser audio in both directions. See [test evidence](docs/testing.md).
+
+A physical iPhone, locked screen, cellular handovers, and a full race remain unverified.
 
 ## Troubleshooting
 
