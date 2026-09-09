@@ -116,11 +116,6 @@ async function handleConnection(
       case "text":
         void session?.appendText(msg.text);
         return;
-      case "interrupt":
-        // Codex handles barge-in server-side once new audio arrives; this is
-        // here so the phone can signal it explicitly on a tap.
-        void session?.appendText("[user interrupted]");
-        return;
       case "bye":
         ws.close();
         return;

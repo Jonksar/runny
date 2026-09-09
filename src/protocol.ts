@@ -13,7 +13,6 @@ import type { RealtimeVoice } from "./types.js";
 export type ClientMessage =
   | { type: "hello"; sampleRate: number; voice?: RealtimeVoice; prompt?: string }
   | { type: "text"; text: string }
-  | { type: "interrupt" }
   | { type: "bye" };
 
 /** Relay to phone. */
@@ -67,8 +66,6 @@ export function decodeClientMessage(raw: string): ClientMessage | null {
       if (typeof text !== "string" || text.length === 0) return null;
       return { type: "text", text };
     }
-    case "interrupt":
-      return { type: "interrupt" };
     case "bye":
       return { type: "bye" };
     default:

@@ -41,8 +41,11 @@ test("unknown and empty messages are rejected", () => {
   assert.equal(decodeClientMessage(JSON.stringify({ type: "text" })), null);
 });
 
+test("interrupt is not part of the protocol: barge-in is server-side VAD", () => {
+  assert.equal(decodeClientMessage('{"type":"interrupt"}'), null);
+});
+
 test("simple control messages decode", () => {
-  assert.deepEqual(decodeClientMessage('{"type":"interrupt"}'), { type: "interrupt" });
   assert.deepEqual(decodeClientMessage('{"type":"bye"}'), { type: "bye" });
   assert.deepEqual(decodeClientMessage('{"type":"text","text":"run the tests"}'), {
     type: "text", text: "run the tests",

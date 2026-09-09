@@ -1,0 +1,10 @@
+{
+  "name": "runny",
+  "short_name": "runny",
+  "description": "Vibe code while running.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10"
+}
