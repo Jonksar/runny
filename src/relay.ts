@@ -1,208 +1,207 @@
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { RealtimeSession, type SandboxMode } from "./session.js";
-import { decodeClientMessage, encode, type AgentState, type ServerMessage } from "./protocol.js";
-import type { RealtimeVoice } from "./types.js";
+import { RealtimeSession, type SessionOptions } from "./session.js";
+import { decodeClientMessage, encode, type ServerMessage } from "./protocol.js";
 
-const WEB_ROOT = fileURLToPath(new URL("../web", import.meta.url));
-
-const MIME: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".webmanifest": "application/manifest+json",
-  ".svg": "image/svg+xml",
-};
-
-export interface RelayOptions {
+export interface RelayOptions extends Omit<SessionOptions, "sdp" | "signal"> {
   port: number;
   host: string;
   cwd: string;
-  voice?: RealtimeVoice;
-  model?: string;
-  sandbox?: SandboxMode;
-  /** Shared secret required as ?token=... on the socket URL. */
   token?: string;
-  /** Path to the codex binary. Defaults to `codex` on PATH. */
-  bin?: string;
-  /** OpenAI API key. Realtime refuses ChatGPT auth. */
-  apiKey?: string;
 }
-
 export interface RelayHandle {
   server: Server;
   close: () => Promise<void>;
 }
+const ASSETS: Record<string, string> = {
+  "/": "text/html; charset=utf-8",
+  "/index.html": "text/html; charset=utf-8",
+  "/client.js": "text/javascript; charset=utf-8",
+  "/manifest.webmanifest": "application/manifest+json",
+};
 
-export function startRelay(options: RelayOptions): Promise<RelayHandle> {
+export async function startRelay(options: RelayOptions): Promise<RelayHandle> {
+  if (
+    !options.token &&
+    !["127.0.0.1", "::1", "localhost"].includes(options.host)
+  ) {
+    throw new Error("A token is required when listening outside localhost");
+  }
   const server = createServer((req, res) => {
-    void serveStatic(req.url ?? "/", res);
+    const pathname = (req.url ?? "/").split("?")[0] ?? "/";
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-content-type-options", "nosniff");
+    if (!ASSETS[pathname]) {
+      res.writeHead(404).end("not found");
+      return;
+    }
+    const asset = pathname === "/" ? "index.html" : pathname.slice(1);
+    void readFile(fileURLToPath(new URL(`../web/${asset}`, import.meta.url)))
+      .then((body) => {
+        res.writeHead(200, { "content-type": ASSETS[pathname]! }).end(body);
+      })
+      .catch(() => res.writeHead(404).end("not found"));
   });
-
-  const wss = new WebSocketServer({ noServer: true });
-  const sessions = new Set<RealtimeSession>();
-
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 70_000 });
+  const cleanups = new Set<() => Promise<void>>();
+  let shuttingDown = false;
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const reject = (status: string) => {
+      socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
+    };
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      reject("400 Bad Request");
+      return;
+    }
+    if (shuttingDown || cleanups.size > 0) {
+      reject("409 Conflict");
+      return;
+    }
+    if (url.pathname !== "/") {
+      reject("404 Not Found");
+      return;
+    }
     if (options.token && url.searchParams.get("token") !== options.token) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
+      reject("401 Unauthorized");
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-  });
-
-  wss.on("connection", (ws: WebSocket) => {
-    void handleConnection(ws, options, sessions);
-  });
-
-  return new Promise((resolve) => {
-    server.listen(options.port, options.host, () => {
-      resolve({
-        server,
-        close: async () => {
-          for (const s of sessions) await s.close().catch(() => {});
-          sessions.clear();
-          wss.close();
-          await new Promise<void>((r) => server.close(() => r()));
-        },
-      });
-    });
-  });
-}
-
-async function handleConnection(
-  ws: WebSocket,
-  options: RelayOptions,
-  sessions: Set<RealtimeSession>,
-): Promise<void> {
-  let session: RealtimeSession | null = null;
-  let lastState: AgentState | null = null;
-
-  const send = (msg: ServerMessage) => {
-    if (ws.readyState === ws.OPEN) ws.send(encode(msg));
-  };
-
-  /** Audio deltas arrive many times a second, so only send real transitions. */
-  const setState = (state: AgentState) => {
-    if (state === lastState) return;
-    lastState = state;
-    send({ type: "state", state });
-  };
-
-  ws.on("message", (data: Buffer, isBinary: boolean) => {
-    if (isBinary) {
-      if (!session) return;
-      // Copy out of the pooled buffer before reinterpreting as samples.
-      const bytes = new Uint8Array(data.byteLength - (data.byteLength % 2));
-      bytes.set(data.subarray(0, bytes.length));
-      void session.appendAudio(new Int16Array(bytes.buffer)).catch((err: Error) => {
-        send({ type: "error", message: err.message });
-      });
-      return;
-    }
-
-    const msg = decodeClientMessage(data.toString("utf8"));
-    if (!msg) return;
-
-    switch (msg.type) {
-      case "hello": {
-        if (session) return;
-        void openSession(msg.sampleRate, msg.voice, msg.prompt);
+    if (req.headers.origin) {
+      try {
+        if (new URL(req.headers.origin).host !== req.headers.host) {
+          reject("403 Forbidden");
+          return;
+        }
+      } catch {
+        reject("403 Forbidden");
         return;
       }
-      case "text":
-        void session?.appendText(msg.text);
-        return;
-      case "bye":
-        ws.close();
-        return;
     }
+    wss.handleUpgrade(req, socket, head, (ws) => connect(ws));
   });
 
-  ws.on("close", () => {
-    if (session) {
-      sessions.delete(session);
-      void session.close().catch(() => {});
-      session = null;
-    }
-  });
-
-  async function openSession(
-    sampleRate: number,
-    voice?: RealtimeVoice,
-    prompt?: string,
-  ): Promise<void> {
-    try {
-      const opened = await RealtimeSession.open({
-        bin: options.bin,
-        apiKey: options.apiKey,
-        cwd: options.cwd,
-        clientSampleRate: sampleRate,
-        voice: voice ?? options.voice,
-        model: options.model,
-        sandbox: options.sandbox,
-        prompt,
-      });
-      session = opened;
-      sessions.add(opened);
-
-      opened.on("audio", (pcm: Int16Array) => {
-        if (ws.readyState === ws.OPEN) {
-          ws.send(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength), { binary: true });
-        }
-      });
-      opened.on("transcript", (role: "user" | "agent", text: string, done: boolean) => {
-        send({ type: "transcript", role, text, done });
-        // The gap between a finished sentence and the first audio frame is
-        // where a runner assumes the thing has died. Name it explicitly.
-        if (role === "user" && done) setState("thinking");
-      });
-      opened.on("audio", () => setState("speaking"));
-      opened.on("error", (err: Error) => send({ type: "error", message: err.message }));
-      opened.on("closed", (reason: string) => {
-        send({ type: "error", message: reason });
-        ws.close();
-      });
-
+  function connect(ws: WebSocket): void {
+    const controller = new AbortController();
+    let session: RealtimeSession | undefined;
+    let opening: Promise<void> | undefined;
+    let alive = true;
+    let cleaning: Promise<void> | undefined;
+    const heartbeat = setInterval(() => {
+      if (!alive) {
+        ws.terminate();
+        return;
+      }
+      alive = false;
+      ws.ping();
+    }, 20_000);
+    ws.on("pong", () => {
+      alive = true;
+    });
+    const send = (msg: ServerMessage) => {
+      if (ws.readyState === ws.OPEN) ws.send(encode(msg));
+    };
+    const fail = (err: unknown) => {
       send({
-        type: "ready",
-        threadId: opened.threadId,
-        sampleRate,
-        voice: voice ?? options.voice ?? "marin",
+        type: "error",
+        message: err instanceof Error ? err.message : "Voice connection failed",
       });
-      setState("listening");
-    } catch (err) {
-      send({ type: "error", message: err instanceof Error ? err.message : String(err) });
-      ws.close();
+      ws.close(1011, "Voice connection failed");
+      void cleanup();
+    };
+    function cleanup(): Promise<void> {
+      if (cleaning) return cleaning;
+      clearInterval(heartbeat);
+      controller.abort();
+      cleaning = (async () => {
+        await opening;
+        await session?.close();
+        cleanups.delete(cleanup);
+      })();
+      return cleaning;
     }
-  }
-}
-
-async function serveStatic(
-  urlPath: string,
-  res: import("node:http").ServerResponse,
-): Promise<void> {
-  const clean = normalize(urlPath.split("?")[0] ?? "/").replace(/^(\.\.[/\\])+/, "");
-  const file = clean === "/" || clean === "" ? "index.html" : clean.replace(/^\//, "");
-  const full = join(WEB_ROOT, file);
-
-  if (!full.startsWith(WEB_ROOT)) {
-    res.writeHead(403).end("forbidden");
-    return;
+    cleanups.add(cleanup);
+    ws.on("close", () => {
+      void cleanup();
+    });
+    ws.on("error", () => {
+      void cleanup();
+    });
+    ws.on("message", (data, binary) => {
+      if (controller.signal.aborted) return;
+      if (binary) {
+        fail(new Error("Audio must use WebRTC"));
+        return;
+      }
+      const msg = decodeClientMessage(data.toString());
+      if (!msg) {
+        fail(new Error("Invalid signaling message"));
+        return;
+      }
+      if (msg.type === "bye") {
+        ws.close();
+        void cleanup();
+        return;
+      }
+      if (msg.type === "text") {
+        if (!session) {
+          fail(new Error("Voice is not connected"));
+          return;
+        }
+        void session.appendText(msg.text).catch(fail);
+        return;
+      }
+      if (opening) return;
+      opening = RealtimeSession.open({
+        ...options,
+        sdp: msg.sdp,
+        signal: controller.signal,
+      })
+        .then((opened) => {
+          session = opened;
+          if (controller.signal.aborted) return;
+          opened.on("fault", fail);
+          if (opened.failure) {
+            fail(opened.failure);
+            return;
+          }
+          send({ type: "answer", threadId: opened.threadId, sdp: opened.sdp });
+        })
+        .catch((err) => {
+          if (!controller.signal.aborted) fail(err);
+        });
+    });
   }
 
   try {
-    const body = await readFile(full);
-    res.writeHead(200, { "content-type": MIME[extname(full)] ?? "application/octet-stream" });
-    res.end(body);
-  } catch {
-    res.writeHead(404).end("not found");
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, options.host, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+  } catch (err) {
+    wss.close();
+    throw err;
   }
+  let closing: Promise<void> | undefined;
+  return {
+    server,
+    close: () => {
+      if (closing) return closing;
+      shuttingDown = true;
+      closing = (async () => {
+        for (const ws of wss.clients) ws.terminate();
+        await Promise.all([...cleanups].map((cleanup) => cleanup()));
+        await new Promise<void>((resolve) => wss.close(() => resolve()));
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      })();
+      return closing;
+    },
+  };
 }
-
-export type { IncomingMessage };

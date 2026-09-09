@@ -1,201 +1,95 @@
-<h1 align="center">runny</h1>
+# runny
 
-<p align="center"><strong>Vibe code while running.</strong></p>
+**Talk to Codex from your phone. Keep running while it works.**
 
-<p align="center">
-  <a href="https://github.com/Jonksar/runny/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Jonksar/runny/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg">
-  <img alt="status" src="https://img.shields.io/badge/status-experimental-orange.svg">
-  <img alt="pace" src="https://img.shields.io/badge/tested%20at-4%3A30%2Fkm-ff69b4.svg">
-</p>
+Runny connects your phone's microphone and headphones to Codex voice. Codex hands coding work to a GPT-6 Astra thread on your computer and brings the results back into the conversation.
 
-`runny` puts your phone's microphone in front of the Codex realtime voice agent, so you can talk to a coding agent working in a real repository while you are outdoors, at pace, with the phone locked in an armband.
+Audio travels directly over WebRTC. Your computer handles signaling and coding. Your ChatGPT login stays in Codex; Runny needs no OpenAI API key.
 
-You talk. It delegates to the coding agent. It tells you what happened in two sentences. You keep running, slightly worse than you would have.
+[Setup](#setup) · [Commands](#commands) · [How it works](docs/architecture.md) · [Protocol](docs/protocol.md) · [Test evidence](docs/testing.md)
 
-```
- iPhone browser                  your Mac
- mic + speaker  ──wss──▶  runny relay  ──JSON-RPC──▶  codex app-server
-                                                           │
-                                                      coding agent
-                                                      in your repo
-```
+## Setup
 
-## Should you use this
+Requires Node.js 22+, a recent Codex installation signed in with ChatGPT, and voice access on that account. Runny prefers the installed macOS desktop Codex binary, then falls back to `codex` on PATH. Use `--codex-bin` to select one explicitly.
 
-Almost certainly not. There is a well-known diagnostic in endurance training called the **talk test**: if you can hold a conversation, you are running easy. So the honest framing is that `runny` works beautifully on a recovery jog and gets structurally harder the more seriously you are racing. At threshold you will produce one word per exhale, and the transcript will read like a ransom note.
-
-Use it on easy miles. Use it on the commute. Use it while walking the dog, where it is frankly excellent and nobody has to know.
-
-## Why it is small
-
-Codex already ships the hard part. Its realtime layer owns the model connection, reconnect backoff, transcript reconciliation, and the handoff to the coding agent that does the real work. What it cannot do is reach your phone, because its audio is wired to your Mac's own microphone and speakers, which are at home, on your desk, not with you.
-
-That gap is the whole project. `runny` is a relay, not a voice agent, and it stays near 1,200 lines because of it.
-
-| | |
-|---|---|
-| **Real audio, not telephony** | PCM16 over a WebSocket into `appendAudio`, back out of `outputAudio/delta`. Wideband, not the 8kHz mush a phone call would give you. |
-| **Sandboxed by default** | `workspace-write`. You cannot tap approve at race pace, so the sandbox is doing a job normally reserved for a conscious adult. |
-| **Pre-flight checks** | `runny doctor` catches the things that would otherwise ruin a run, three kilometres from home, with no way to fix them. |
-| **No build step to use** | One command from a fresh machine. It compiles itself on install. |
-| **Testable without an account** | The suite runs against a fake app-server. No key, no quota, no network. |
-
-## Requirements
-
-Three things, and the third is the one that will get you.
-
-- **Node 22 or newer.**
-- **The [Codex CLI](https://developers.openai.com/codex/cli)** on your `PATH`, signed in.
-- **An OpenAI API key** in `OPENAI_API_KEY`.
-
-That last one is not optional and not what you would guess. Codex itself runs fine on your ChatGPT plan, and `runny voices` will cheerfully answer using it, which makes everything look ready. But opening an actual realtime conversation returns:
-
-```
-thread/realtime/error  realtime conversation requires API key auth
-```
-
-It arrives a few seconds *after* a successful `start`, so it presents as a hang rather than an auth failure. Your ChatGPT subscription and your platform API billing are different wallets, and realtime only accepts the second one. `runny doctor` checks this so you find out indoors.
-
-## Install
-
-One command, from nothing:
-
-```bash
-npx github:Jonksar/runny doctor
-```
-
-That clones, installs, compiles, and tells you what is missing. To keep it around:
-
-```bash
+```sh
 npm install -g github:Jonksar/runny
 ```
 
-From a clone:
+From the repository you want Codex to work in:
 
-```bash
-git clone https://github.com/Jonksar/runny && cd runny && npm install && npm test
+```sh
+runny doctor
+runny
 ```
 
-## Quickstart
+`doctor` checks login and protocol metadata without opening a model session. A passing check does not prove voice availability. Runny prints a local URL with an access token. Open it, allow the microphone, and tap **Start**. Tap **Stop** to end the session.
 
-```bash
-export OPENAI_API_KEY=sk-...
-runny doctor                        # confirm everything before you put shoes on
-runny serve --cwd ~/code/my-project
-```
+For a phone, expose the local port through your existing HTTPS tunnel. With Tailscale installed and both devices signed into your tailnet:
 
-```
-runny 0.1.0
-  repo     /Users/you/code/my-project
-  sandbox  workspace-write
-  local    http://127.0.0.1:8765/?token=8f3c1a...
-```
-
-Now get that URL onto your phone, which is its own adventure.
-
-## Testing it from your iPhone
-
-The relay binds to localhost, and iOS will not give a web page a microphone unless the page is HTTPS. Typing your Mac's LAN address into Safari therefore fails in a way that looks like a `runny` bug and is not: no certificate, no microphone, no exceptions, not even on your own network.
-
-So you need a tunnel that terminates TLS. Pick one.
-
-**cloudflared** is the fastest way to test, because it needs no account and no login.
-
-```bash
-brew install cloudflared
-runny serve --cwd ~/code/my-project          # note the token it prints
-cloudflared tunnel --url http://localhost:8765
-```
-
-It prints a `https://something-random.trycloudflare.com` URL. Open that on your phone with `/?token=...` appended. Random subdomain, so treat the token as the only thing protecting your repo, because it is.
-
-**Tailscale** is what you want for regular use. Stable hostname, real certificate, and your phone is already on the network.
-
-```bash
-brew install tailscale   # or the App Store app
+```sh
 tailscale serve --bg 8765
 ```
 
-Then open the `https://<machine>.<tailnet>.ts.net/?token=...` it gives you.
+Open the printed HTTPS address on your phone and append the `/#token=...` fragment printed by Runny. Keep the token private: it grants control of the chosen repository. The relay listens on localhost by default and accepts one controller at a time.
 
-**What a working run looks like.** Tap Start, grant the microphone once, and the status line moves through `listening` to `thinking` to `speaking`. Say something small first, like asking what files are in the repo. If you get audio back, the whole path works and you can go outside.
-
-**If it fails, in likely order.** No microphone prompt means the page is not HTTPS. A prompt but no audio back means check the terminal, which is where the real error lands. Audio that stops the moment you lock the phone is iOS suspending Safari, which is expected and covered below.
+Keep the computer awake and connected. Use headphones and keep the phone page open. Screen wake lock is best effort. Safari background audio, a locked screen, cellular handovers, wind, and race-length reliability need testing on your own phone before the race.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `runny` / `runny serve` | Start the relay and serve the phone client |
-| `runny doctor` | Check node, codex, auth, API key, realtime, and quota. Exits non-zero if blocked. |
-| `runny voices` | List the voices your account can use |
+```sh
+runny --cwd ~/my-project
+runny --sandbox read-only
+runny --model gpt-6-astra
+runny --codex-bin /path/to/codex
+runny voices
+runny --help
+```
 
-## Options
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--cwd` | Current directory | Coding workspace |
+| `--model` | `gpt-6-astra` | Coding orchestrator, independent of voice model |
+| `--voice` | Codex selection | Optional voice override |
+| `--sandbox` | `workspace-write` | Also accepts `read-only` or `danger-full-access` |
+| `--host` | `127.0.0.1` | Listen address |
+| `--port` | `8765` | Listen port |
+| `--token` | Random per launch | Override access token |
+| `--codex-bin` | Desktop binary, then PATH | Select Codex installation |
 
-| Flag | Default | Notes |
-|---|---|---|
-| `--cwd <path>` | current dir | Repository the agent works in. Point it at a worktree. |
-| `--port <n>` | `8765` | |
-| `--host <addr>` | `127.0.0.1` | Widen only if you know why. Tunnelling is not a reason. |
-| `--voice <name>` | `marin` | `runny voices` lists what your account has. |
-| `--model <name>` | plan default | Useful when your main quota is spent. |
-| `--sandbox <mode>` | `workspace-write` | `read-only`, `workspace-write`, `danger-full-access` |
-| `--token <secret>` | generated | Required as `?token=` on the socket. |
-| `--no-token` | off | Leans entirely on the tunnel for access control. |
-| `--codex-bin <path>` | `codex` on PATH | Point at a specific Codex build. |
-| `--api-key <key>` | `$OPENAI_API_KEY` | Required. See Requirements. |
+Coding runs with interactive approvals disabled. The selected sandbox still applies, so commands requiring approval can fail. Runny refuses unexpected interactive requests. Use a dedicated checkout and inspect the resulting work locally. Codex controls task execution and any subagents; Runny does not add a second orchestration service.
 
-## Safety
+## Cost and compatibility
 
-You are about to leave a coding agent unsupervised in a repository while you are physically elsewhere and out of breath. Two things stand in for the judgement you normally apply.
+Runny adds no paid relay service. Voice and coding remain subject to your account's access, limits, and credits. This is not a quota bypass or a promise of free usage. Choose a cheaper available coding model with `--model` when Astra is unnecessary. Stop the call when finished; Runny does not silently retry into another paid transport.
 
-**The sandbox** is the only thing between a misheard sentence and your working tree. Wind noise plus heavy breathing plus a speech model is not a combination that inspires confidence, and "delete the old tests" and "delete the whole test suite" are four syllables apart. Start on `--sandbox read-only` until you trust it.
+The implementation uses the experimental Codex app-server WebRTC v3 interface, tested with Codex **0.153.4**. Older builds may expose the same methods but use an obsolete voice model. `runny voices` lists metadata, not a guarantee that each voice works with v3.
 
-**The token** is generated per run. Without it, anyone who reaches that URL is driving a coding agent inside your repository. `--no-token` is defensible behind Tailscale and reckless on a public tunnel.
-
-Point `--cwd` at a git worktree, not your main checkout, and review everything at the finish line while you still have adrenaline to soften the blow.
+This is a browser call to Codex. It does not inject audio into an already-open desktop voice call, integrate with ChatGPT mobile voice, or provide a telephone number. Those approaches motivated the project; the smaller direct WebRTC connection is implemented here.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Session starts, then dies a few seconds later | ChatGPT auth. Realtime needs an API key. | Set `OPENAI_API_KEY`. See Requirements. |
-| `-32600 requires experimentalApi capability` | `initialize` did not declare it | `runny` handles this. Writing your own client? See [docs/protocol.md](docs/protocol.md). |
-| `invalid type: string "websocket"` | `transport` is a tagged enum, not a string | `{ "type": "websocket" }`, plus top-level `outputModality`. |
-| `method not found: thread/realtime/*` | Feature flag off | `runny` passes `--enable realtime_conversation`. Your `codex` may predate it. |
-| No microphone prompt on the phone | Page is not HTTPS | iOS requires TLS off private addresses. Tunnel it. |
-| Audio stops when you pocket the phone | iOS suspended the tab | Known limit, see below. |
-| Works on laptop, dead on phone | Bound to `127.0.0.1` | Tunnel it. Do not widen `--host`. |
-
-## Known limits
-
-**iOS suspends audio when Safari backgrounds.** This is the real one. Home-screen install helps and active playback buys you longer than you would expect, but a locked phone in a pocket eventually stops capturing. Treat screen-on as a requirement and expect a reconnect on a long run. Fixing it properly needs a native client with CallKit, which is a different project and a worse hobby.
-
-**Realtime is experimental in Codex.** `realtime_conversation` is marked under development. Method names here were read out of `codex-cli 0.149.1` and verified against a live session. They can change without warning, and did once already while this README was being written.
-
-**Twenty exchanges, not two hundred.** A 10k gives you roughly twenty useful spoken turns. Queue the real work before you leave. Mid-run you are triaging and dictating, not reviewing code, and certainly not refactoring.
-
-**It will make you slower.** Not much. But talking costs oxygen, and oxygen was going somewhere.
-
-## Documentation
-
-| Document | Covers |
-|---|---|
-| [docs/protocol.md](docs/protocol.md) | Codex realtime app-server methods, payload shapes, the undocumented requirements |
-| [docs/architecture.md](docs/architecture.md) | Module layout, audio path, resampling, what runs where |
+| Symptom | Check |
+| --- | --- |
+| Microphone blocked | Use HTTPS on the phone, allow microphone access, and check browser permissions. Localhost works on the computer. |
+| Relay connection failed | Check tunnel, token, and whether another controller is still connected or shutting down. |
+| Voice model/version error | Select a recent Codex binary with `--codex-bin`; retry a short call. |
+| Start returns but no voice | Runny waits for the SDP answer and a connected audio peer. Read the displayed error; metadata alone does not prove access. |
+| Coding does not proceed | Check account limits, the chosen model, sandbox restrictions, and the task in Codex. |
+| Disconnect | Tap Start to open a new conversation. Runny does not replay instructions or resume a disconnected coding task. |
 
 ## Development
 
-```bash
-npm run build      # compile to dist/
-npm test           # build, then run the suite
-npm run typecheck  # types only
+```sh
+npm ci
+npm test
+npm run typecheck
+npx playwright install chromium
+npm run test:browser
 ```
 
-Tests run against the built output, so they exercise what ships. `test/fake-codex.js` stands in for `codex app-server`, which is why the suite needs no key, no quota, and no network. It is also the only part of this project that has never been outside.
+The normal suite and local browser test need no login or model credits. The browser test uses a real local WebRTC peer with synthetic audio. `RUNNY_BROWSER_CHANNEL=chrome npm run test:browser` uses an installed Chrome instead of downloading Chromium.
 
-## License
+The package exports `startRelay`, `RealtimeSession`, `AppServerClient`, diagnostics, and signaling types. See [protocol and API](docs/protocol.md). Version 0.2 replaces the 0.1 PCM transport with WebRTC; binary audio frames and API-key options were removed.
 
-MIT
+MIT licensed. Inspired by [Codex](https://github.com/openai/codex), [Happy](https://github.com/slopus/happy), and [duck_talk](https://github.com/dhuynh95/duck_talk). Documentation structure takes cues from [Hermes Agent](https://github.com/NousResearch/hermes-agent).

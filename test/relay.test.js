@@ -1,121 +1,151 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
-import { startRelay } from "../dist/relay.js";
-
-const FAKE = fileURLToPath(new URL("./fake-codex.js", import.meta.url));
-
-async function withRelay(opts, fn) {
+import { startRelay } from "../dist/index.js";
+const bin = fileURLToPath(new URL("./fake-codex.js", import.meta.url));
+async function setup(t, opts = {}) {
   const handle = await startRelay({
-    port: 0, host: "127.0.0.1", cwd: process.cwd(), bin: FAKE, ...opts,
+    port: 0,
+    host: "127.0.0.1",
+    cwd: process.cwd(),
+    bin,
+    token: "secret",
+    ...opts,
   });
-  const { port } = handle.server.address();
-  try {
-    await fn(port);
-  } finally {
-    await handle.close();
-  }
+  t.after(() => handle.close());
+  return { handle, url: `http://127.0.0.1:${handle.server.address().port}` };
 }
-
-/** Collect frames until `done` says we have what we need. */
-function collect(ws, done) {
+async function connect(url, token = "secret") {
+  const ws = new WebSocket(url.replace("http", "ws") + "/?token=" + token);
+  await new Promise((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+  return ws;
+}
+function message(ws) {
   return new Promise((resolve, reject) => {
-    const frames = [];
-    const timer = setTimeout(() => reject(new Error("timed out: " + JSON.stringify(frames))), 5000);
-    ws.on("message", (data, isBinary) => {
-      frames.push(isBinary ? { binary: data } : JSON.parse(data.toString("utf8")));
-      if (done(frames)) {
-        clearTimeout(timer);
-        resolve(frames);
-      }
+    const timer = setTimeout(
+      () => reject(new Error("No signaling response")),
+      3000,
+    );
+    ws.once("message", (data) => {
+      clearTimeout(timer);
+      resolve(JSON.parse(data));
     });
-    ws.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
 }
-
-test("hello opens a session and the relay reports ready then listening", async () => {
-  await withRelay({}, async (port) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
-    await new Promise((r) => ws.once("open", r));
-    const wait = collect(ws, (f) => f.some((m) => m.type === "state" && m.state === "listening"));
-    ws.send(JSON.stringify({ type: "hello", sampleRate: 48000 }));
-    const frames = await wait;
-
-    const ready = frames.find((m) => m.type === "ready");
-    assert.ok(ready, "expected a ready frame");
-    assert.equal(ready.threadId, "thread-fake-1");
-    assert.equal(ready.sampleRate, 48000);
-    ws.close();
+test("authenticated SDP handshake returns an answer, never premature ready", async (t) => {
+  const { url } = await setup(t);
+  const ws = await connect(url);
+  t.after(() => ws.terminate());
+  const response = message(ws);
+  ws.send(JSON.stringify({ type: "hello", sdp: "v=0\r\n" }));
+  assert.deepEqual(await response, {
+    type: "answer",
+    threadId: "thread-fake-1",
+    sdp: "v=0\r\nanswer",
   });
 });
-
-test("microphone audio round trips back as binary", async () => {
-  await withRelay({}, async (port) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
-    ws.binaryType = "nodebuffer";
-    await new Promise((r) => ws.once("open", r));
-
-    const ready = collect(ws, (f) => f.some((m) => m.type === "ready"));
-    ws.send(JSON.stringify({ type: "hello", sampleRate: 48000 }));
-    await ready;
-
-    const audioBack = collect(ws, (f) => f.some((m) => m.binary));
-    const pcm = new Int16Array([1, 2, 3, 4, 5, 6]);
-    ws.send(Buffer.from(pcm.buffer), { binary: true });
-    const frames = await audioBack;
-
-    const chunk = frames.find((m) => m.binary).binary;
-    assert.ok(chunk.byteLength > 0, "expected non-empty audio back");
-    assert.equal(chunk.byteLength % 2, 0, "audio must be whole PCM16 samples");
-    ws.close();
-  });
+test("late startup rejection reaches phone as an error", async (t) => {
+  const { url } = await setup(t);
+  const ws = await connect(url);
+  t.after(() => ws.terminate());
+  const response = message(ws);
+  ws.send(JSON.stringify({ type: "hello", sdp: "v=0\r\nreject" }));
+  assert.match((await response).message, /voice unavailable/);
 });
-
-test("a bad token is refused at upgrade", async () => {
-  await withRelay({ token: "secret" }, async (port) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=wrong`);
-    await assert.rejects(
-      () => new Promise((resolve, reject) => {
-        ws.once("open", () => resolve());
-        ws.once("error", reject);
-      }),
-    );
+test("token is required and another website cannot use it", async (t) => {
+  const { url } = await setup(t);
+  await assert.rejects(connect(url, "wrong"), /401/);
+  const ws = new WebSocket(url.replace("http", "ws") + "/?token=secret", {
+    origin: "https://evil.example",
   });
-});
-
-test("a good token is accepted", async () => {
-  await withRelay({ token: "secret" }, async (port) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=secret`);
-    await new Promise((resolve, reject) => {
+  await assert.rejects(
+    new Promise((resolve, reject) => {
       ws.once("open", resolve);
       ws.once("error", reject);
-    });
-    ws.close();
-  });
+    }),
+    /403/,
+  );
+});
+test("shutdown finishes with a connected phone and startup in progress", async (t) => {
+  const { url, handle } = await setup(t);
+  const ws = await connect(url);
+  t.after(() => ws.terminate());
+  ws.send(JSON.stringify({ type: "hello", sdp: "v=0\r\nno-answer" }));
+  await handle.close();
+});
+test("another controller cannot create a parallel coding session", async (t) => {
+  const { url } = await setup(t);
+  const first = await connect(url);
+  t.after(() => first.terminate());
+  await assert.rejects(connect(url), /409/);
+});
+test("static client is served without leaking the token in referrers", async (t) => {
+  const { url } = await setup(t);
+  const res = await fetch(url);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("referrer-policy"), "no-referrer");
+  assert.match(await res.text(), /runny/);
+  assert.equal((await fetch(url + "/package.json")).status, 404);
+});
+test("a busy port rejects startup", async (t) => {
+  const { handle } = await setup(t);
+  await assert.rejects(
+    startRelay({
+      port: handle.server.address().port,
+      host: "127.0.0.1",
+      cwd: process.cwd(),
+    }),
+    /EADDRINUSE/,
+  );
 });
 
-test("static client is served and traversal is refused", async () => {
-  await withRelay({}, async (port) => {
-    const index = await fetch(`http://127.0.0.1:${port}/`);
-    assert.equal(index.status, 200);
-    assert.match(await index.text(), /runny/);
-
-    const escaped = await fetch(`http://127.0.0.1:${port}/../package.json`);
-    assert.notEqual(escaped.status, 200);
-  });
-});
-
-test("malformed control frames are ignored rather than fatal", async () => {
-  await withRelay({}, async (port) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/`);
-    await new Promise((r) => ws.once("open", r));
-    ws.send("{not json");
-    ws.send(JSON.stringify({ type: "launch_missiles" }));
-
-    const ready = collect(ws, (f) => f.some((m) => m.type === "ready"));
-    ws.send(JSON.stringify({ type: "hello", sampleRate: 48000 }));
-    await ready;
-    ws.close();
-  });
+test("reconnecting waits for the previous coding process to finish closing", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "runny-shutdown-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const slowBin = join(directory, "slow-codex.mjs");
+  await writeFile(
+    slowBin,
+    `#!/usr/bin/env node
+import ${JSON.stringify(pathToFileURL(bin).href)};
+process.stdin.once('end', () => setTimeout(() => {}, 500));
+`,
+    { mode: 0o755 },
+  );
+  const { url } = await setup(t, { bin: slowBin });
+  const first = await connect(url);
+  t.after(() => first.terminate());
+  const answer = message(first);
+  first.send(JSON.stringify({ type: "hello", sdp: "v=0\r\n" }));
+  assert.equal((await answer).type, "answer");
+  const disconnected = new Promise((resolve) => first.once("close", resolve));
+  first.close();
+  await disconnected;
+  const reconnect = async () => {
+    const next = await connect(url);
+    t.after(() => next.terminate());
+    return next;
+  };
+  await assert.rejects(reconnect(), /409/);
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {
+      await reconnect();
+      return;
+    } catch (err) {
+      assert.match(err.message, /409/);
+      assert.ok(
+        Date.now() < deadline,
+        "Relay should accept a controller after cleanup",
+      );
+      await delay(50);
+    }
+  }
 });

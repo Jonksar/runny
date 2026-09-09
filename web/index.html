@@ -18,11 +18,11 @@
     padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
   }
   header { padding: 20px 0 8px; }
-  h1 { margin: 0; font-size: 15px; letter-spacing: .18em; text-transform: uppercase; color: #6b7684; font-weight: 600; }
+  h1 { margin: 0; font-size: 15px; letter-spacing: .18em; text-transform: uppercase; color: #a3adbb; font-weight: 600; }
   #state {
     margin-top: 6px; font-size: 34px; font-weight: 700; letter-spacing: -.02em;
   }
-  .idle { color: #6b7684; } .listening { color: #4ade80; }
+  .idle { color: #a3adbb; } .listening { color: #4ade80; }
   .thinking { color: #fbbf24; } .speaking { color: #60a5fa; } .error { color: #f87171; }
   #log {
     flex: 1; overflow-y: auto; margin: 16px 0; display: flex;
@@ -33,198 +33,27 @@
   .line.agent { color: #e8ecf1; }
   .line.sys { color: #f87171; font-size: 15px; }
   #go {
-    width: 100%; min-height: 88px; border: 0; border-radius: 18px;
+    width: 100%; min-height: 88px; border: 0; border-radius: 12px;
     background: #2563eb; color: #fff; font-size: 22px; font-weight: 650;
     margin-bottom: 14px; -webkit-tap-highlight-color: transparent;
   }
-  #go:disabled { background: #1f2937; color: #6b7684; }
+  #go:disabled { background: #1f2937; color: #a3adbb; }
   #go.stop { background: #b91c1c; }
+  #go:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+  header p { color: #a3adbb; }
+  .line { overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header>
   <h1>runny</h1>
-  <div id="state" class="idle">tap to start</div>
+  <div id="state" class="idle" role="status">Ready to connect</div>
+  <p>Use headphones. Keep this page open while talking.</p>
 </header>
-<div id="log"></div>
+<div id="log" role="log" aria-label="Conversation"></div>
 <button id="go">Start</button>
 
-<script type="module">
-const stateEl = document.getElementById('state');
-const logEl = document.getElementById('log');
-const goEl = document.getElementById('go');
-
-let ws = null, ctx = null, micNode = null, stream = null;
-let playhead = 0, running = false, wakeLock = null;
-
-function setState(s, label) {
-  stateEl.className = s;
-  stateEl.textContent = label ?? s;
-}
-
-function line(cls, text) {
-  const el = document.createElement('div');
-  el.className = 'line ' + cls;
-  el.textContent = text;
-  logEl.appendChild(el);
-  logEl.scrollTop = logEl.scrollHeight;
-  return el;
-}
-
-// The relay wants one message per ~20ms of audio. An AudioWorklet hands us
-// 128 frames at a time, so batch them up before crossing the port.
-const WORKLET = `
-class Capture extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.buf = new Float32Array(0);
-    this.target = Math.round(sampleRate * 0.02);
-  }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (!ch) return true;
-    const merged = new Float32Array(this.buf.length + ch.length);
-    merged.set(this.buf); merged.set(ch, this.buf.length);
-    this.buf = merged;
-    while (this.buf.length >= this.target) {
-      this.port.postMessage(this.buf.slice(0, this.target));
-      this.buf = this.buf.slice(this.target);
-    }
-    return true;
-  }
-}
-registerProcessor('capture', Capture);
-`;
-
-function floatToPcm16(f32) {
-  const out = new Int16Array(f32.length);
-  for (let i = 0; i < f32.length; i++) {
-    const s = Math.max(-1, Math.min(1, f32[i]));
-    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return out;
-}
-
-function playPcm(int16) {
-  if (!ctx) return;
-  const buf = ctx.createBuffer(1, int16.length, ctx.sampleRate);
-  const ch = buf.getChannelData(0);
-  for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(ctx.destination);
-  // Keep a small lead so consecutive chunks butt up against each other
-  // instead of clicking. Reset the playhead whenever we fall behind.
-  const now = ctx.currentTime;
-  if (playhead < now + 0.02) playhead = now + 0.02;
-  src.start(playhead);
-  playhead += buf.duration;
-  setState('speaking');
-  clearTimeout(playPcm.timer);
-  playPcm.timer = setTimeout(() => running && setState('listening'), (playhead - now) * 1000 + 250);
-}
-
-async function start() {
-  goEl.disabled = true;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
-  } catch (err) {
-    line('sys', 'microphone blocked: ' + err.message);
-    setState('error', 'no mic');
-    goEl.disabled = false;
-    return;
-  }
-
-  ctx = new AudioContext();
-  await ctx.resume();
-  const blob = new Blob([WORKLET], { type: 'application/javascript' });
-  await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
-
-  const url = new URL(location.href);
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const token = url.searchParams.get('token');
-  ws = new WebSocket(`${proto}://${location.host}/${token ? '?token=' + token : ''}`);
-  ws.binaryType = 'arraybuffer';
-
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'hello', sampleRate: ctx.sampleRate }));
-    setState('thinking', 'connecting');
-  };
-
-  ws.onmessage = (ev) => {
-    if (ev.data instanceof ArrayBuffer) {
-      playPcm(new Int16Array(ev.data));
-      return;
-    }
-    const msg = JSON.parse(ev.data);
-    if (msg.type === 'ready') {
-      running = true;
-      setState('listening');
-      goEl.disabled = false;
-      goEl.textContent = 'Stop';
-      goEl.classList.add('stop');
-      line('sys', 'connected, voice ' + msg.voice);
-    } else if (msg.type === 'transcript') {
-      const last = logEl.lastElementChild;
-      if (last && last.dataset.role === msg.role && last.dataset.open === '1') {
-        last.textContent = msg.done ? msg.text : last.textContent + msg.text;
-        if (msg.done) last.dataset.open = '0';
-      } else {
-        const el = line(msg.role, msg.text);
-        el.dataset.role = msg.role;
-        el.dataset.open = msg.done ? '0' : '1';
-      }
-    } else if (msg.type === 'state') {
-      // The relay knows when the model is thinking; playback drain below is
-      // what returns us to listening, so ignore its 'speaking' echo.
-      if (msg.state !== 'speaking') setState(msg.state);
-    } else if (msg.type === 'error') {
-      line('sys', msg.message);
-      setState('error');
-    }
-  };
-
-  ws.onclose = () => { if (running) line('sys', 'disconnected'); stop(); };
-  ws.onerror = () => setState('error', 'socket failed');
-
-  const source = ctx.createMediaStreamSource(stream);
-  micNode = new AudioWorkletNode(ctx, 'capture');
-  micNode.port.onmessage = (ev) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(floatToPcm16(ev.data).buffer);
-    }
-  };
-  source.connect(micNode);
-  // Worklets need a path to the destination to be pulled. Route through a
-  // muted gain so the mic never feeds back into the speaker.
-  const mute = ctx.createGain();
-  mute.gain.value = 0;
-  micNode.connect(mute).connect(ctx.destination);
-
-  try { wakeLock = await navigator.wakeLock.request('screen'); } catch { /* not fatal */ }
-}
-
-function stop() {
-  running = false;
-  try { ws && ws.close(); } catch {}
-  try { stream && stream.getTracks().forEach(t => t.stop()); } catch {}
-  try { ctx && ctx.close(); } catch {}
-  try { wakeLock && wakeLock.release(); } catch {}
-  ws = null; ctx = null; stream = null; wakeLock = null; playhead = 0;
-  goEl.disabled = false;
-  goEl.textContent = 'Start';
-  goEl.classList.remove('stop');
-  setState('idle', 'tap to start');
-}
-
-goEl.addEventListener('click', () => running || ws ? stop() : start());
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && ctx && ctx.state === 'suspended') {
-    await ctx.resume();
-  }
-});
-</script>
+<audio id="audio" autoplay playsinline></audio>
+<script type="module" src="client.js"></script>
 </body>
 </html>
