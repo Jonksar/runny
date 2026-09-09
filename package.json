@@ -1,0 +1,40 @@
+{
+  "name": "runny",
+  "version": "0.1.0",
+  "description": "Vibe code while running. A relay that puts your phone's microphone in front of Codex's realtime voice agent.",
+  "type": "module",
+  "bin": {
+    "runny": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test test/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/cli.js serve"
+  },
+  "keywords": [
+    "codex",
+    "voice",
+    "realtime",
+    "coding-agent",
+    "running"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jonksar/runny.git"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.6.0"
+  }
+}
