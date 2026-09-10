@@ -1,4 +1,5 @@
-# runny - **Vibe code while running.**
+# runny 
+**Vibe code while running.**
 
 Going outside was supposed to help. Runny connects your phone's microphone and headphones to **Codex voice chat**.
 
