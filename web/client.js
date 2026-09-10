@@ -2,6 +2,7 @@ const stateEl = document.getElementById("state");
 const logEl = document.getElementById("log");
 const button = document.getElementById("go");
 const audio = document.getElementById("audio");
+const clockEl = document.getElementById("clock");
 const url = new URL(location.href);
 const token =
   new URLSearchParams(url.hash.slice(1)).get("token") ??
@@ -16,6 +17,11 @@ let current = null;
 function state(label, kind = "idle") {
   stateEl.textContent = label;
   stateEl.className = kind;
+  document.body.dataset.state = kind;
+}
+function tick(call) {
+  const s = Math.floor((Date.now() - call.startedAt) / 1000);
+  clockEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 function line(text, role = "sys") {
   const el = document.createElement("div");
@@ -31,6 +37,7 @@ function stop(message = "Ready to connect", failed = false) {
   if (call) {
     clearTimeout(call.timer);
     clearTimeout(call.disconnectTimer);
+    clearInterval(call.clock);
     call.ws?.close();
     call.pc?.close();
     call.stream?.getTracks().forEach((track) => track.stop());
@@ -52,6 +59,10 @@ function checkReady(call) {
     return;
   clearTimeout(call.timer);
   state("Connected", "listening");
+  if (!call.startedAt) {
+    call.startedAt = Date.now();
+    call.clock = setInterval(() => tick(call), 1000);
+  }
 }
 function event(call, raw) {
   if (current !== call) return;
@@ -110,6 +121,7 @@ async function start() {
   }
   const call = {};
   current = call;
+  clockEl.textContent = "0:00";
   button.textContent = "Cancel";
   button.classList.add("stop");
   state("Connecting", "thinking");

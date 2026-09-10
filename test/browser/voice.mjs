@@ -33,16 +33,6 @@ const peerServer = createServer((req, res) => {
         window.peer = pc;
         pc.ondatachannel = ({ channel }) => {
           window.events = channel;
-          channel.onopen = () =>
-            channel.send(
-              JSON.stringify({
-                type: "turn.done",
-                turn: {
-                  role: "assistant",
-                  transcript: "Local voice connection verified.",
-                },
-              }),
-            );
         };
         await pc.setRemoteDescription({ type: "offer", sdp });
         const ctx = new AudioContext();
@@ -90,6 +80,19 @@ try {
     () => document.getElementById("state").textContent === "Connected",
     null,
     { timeout: 15_000 },
+  );
+  // Send only after the page reports Connected. A message sent the instant the
+  // peer's end opened was occasionally lost on Linux Chromium (1 in 24 runs).
+  await upstream.evaluate(() =>
+    window.events.send(
+      JSON.stringify({
+        type: "turn.done",
+        turn: {
+          role: "assistant",
+          transcript: "Local voice connection verified.",
+        },
+      }),
+    ),
   );
   await page.getByText("Local voice connection verified.").waitFor();
   await page.waitForFunction(
