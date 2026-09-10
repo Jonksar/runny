@@ -33,7 +33,7 @@ const peerServer = createServer((req, res) => {
         window.peer = pc;
         pc.ondatachannel = ({ channel }) => {
           window.events = channel;
-          channel.onopen = () =>
+          const greet = () =>
             channel.send(
               JSON.stringify({
                 type: "turn.done",
@@ -43,6 +43,10 @@ const peerServer = createServer((req, res) => {
                 },
               }),
             );
+          // Chromium can announce a remote channel that is already open, so
+          // an open listener attached here may never fire.
+          if (channel.readyState === "open") greet();
+          else channel.onopen = greet;
         };
         await pc.setRemoteDescription({ type: "offer", sdp });
         const ctx = new AudioContext();

@@ -26,6 +26,17 @@ test("doctor honors the selected binary and reports an unsigned account", async 
     (err) => err.code === 1 && /sign in/i.test(err.stdout),
   );
 });
+test("phone link uses the tailnet name and detects an existing serve", async () => {
+  const { phoneUrl, servesPort } = await import("../dist/phone.js");
+  assert.equal(
+    phoneUrl("mac.tail1234.ts.net.", "a b"),
+    "https://mac.tail1234.ts.net/#token=a%20b",
+  );
+  const status = '{"Web":{"mac.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8765"}}}}}';
+  assert.equal(servesPort(status, 8765), true);
+  assert.equal(servesPort(status, 876), false);
+  assert.equal(servesPort("", 8765), false);
+});
 test("voices honors the selected binary without spending model tokens", async () => {
   const { stdout } = await run(
     process.execPath,
