@@ -2,7 +2,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   AppServerClient,
+  compareVersions,
   defaultCodexBin,
+  MIN_REALTIME_CODEX,
+  parseVersion,
   type AppServerOptions,
 } from "./appserver.js";
 import { REALTIME_METHODS, type RealtimeVoicesList } from "./types.js";
@@ -27,7 +30,19 @@ export async function diagnose(
     const { stdout } = await promisify(execFile)(bin, ["--version"], {
       timeout: 5000,
     });
-    checks.push({ name: "codex", ok: true, detail: stdout.trim() });
+    const version = parseVersion(stdout);
+    // Reporting the version is not enough. A build below the floor passes every
+    // other check here and then fails mid-call with an opaque alpha-header
+    // error, which is exactly the case doctor exists to catch indoors.
+    const tooOld =
+      version !== null && compareVersions(version, MIN_REALTIME_CODEX) < 0;
+    checks.push({
+      name: "codex",
+      ok: !tooOld,
+      detail: tooOld
+        ? `${stdout.trim()} at ${bin} is too old for realtime. Need >= ${MIN_REALTIME_CODEX}; the build inside ChatGPT.app is usually newer.`
+        : `${stdout.trim()} (${bin})`,
+    });
   } catch {
     checks.push({
       name: "codex",

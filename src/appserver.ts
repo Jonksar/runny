@@ -2,6 +2,33 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 
+/**
+ * Oldest Codex known to hold a WebRTC realtime call.
+ *
+ * The client sends an `openai-alpha: quicksilver=vN` header when opening one,
+ * and older builds send a value the backend rejects with
+ * `AVAS requires OpenAI-Alpha: quicksilver=v2`. Observed failing on 0.149.1
+ * and working on 0.153.4. The failure arrives asynchronously, after
+ * `thread/realtime/start` has already returned success, so it reads as a hang.
+ */
+export const MIN_REALTIME_CODEX = "0.153.0";
+
+/** Numeric dotted-version compare. Missing parts count as zero. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Pull a dotted version out of `codex --version` output. */
+export function parseVersion(output: string): string | null {
+  return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
+}
+
 export function defaultCodexBin(): string {
   for (const path of [
     "/Applications/ChatGPT.app/Contents/Resources/codex",
