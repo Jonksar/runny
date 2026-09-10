@@ -10,7 +10,7 @@ Going outside was supposed to help. Runny connects your phone's microphone and h
    * "Start voice"
 3. Write code while running
 
-[Setup](#setup) · [Commands](#commands) · [How it works](docs/architecture.md) · [Protocol](docs/protocol.md) · [Test evidence](docs/testing.md)
+[Setup](#setup)
 
 ## Setup
 
