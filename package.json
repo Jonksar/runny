@@ -19,13 +19,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
-    "prepare": "npm run build",
+    "compile": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
     "dev": "tsc --watch",
-    "test": "npm run build && node --test test/*.test.js",
+    "test:install": "node --test test/install.test.js",
+    "test": "npm run compile && node --test test/*.test.js",
     "typecheck": "tsc --noEmit",
     "start": "node dist/cli.js serve",
-    "test:browser": "npm run build && node test/browser/voice.mjs"
+    "test:browser": "npm run compile && node test/browser/voice.mjs"
   },
   "keywords": [
     "codex",
