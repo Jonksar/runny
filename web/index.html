@@ -4,94 +4,204 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#151827">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f0e3">
 <link rel="manifest" href="manifest.webmanifest">
 <title>runny</title>
 <style>
-  /* Night run under streetlights: read at arm's length, mid-stride. */
   :root {
-    color-scheme: dark;
-    --asphalt: #151827;
-    --kerb: #262b47;
-    --chalk: #eef0f7;
-    --fog: #9aa0b8;
-    --sodium: #ffb547;
-    --mint: #6fe3b8;
-    --sky: #84b8ff;
-    --coral: #ff7a70;
-    --live: var(--fog);
+    color-scheme: light;
+    --paper: #f7f0e3;
+    --ink: #17140f;
+    --muted: #756b5e;
+    --line: #d6c7b1;
+    --orange: #fb6822;
+    --orange-deep: #bc3f15;
   }
-  body[data-state="listening"] { --live: var(--mint); }
-  body[data-state="thinking"] { --live: var(--sodium); }
-  body[data-state="speaking"] { --live: var(--sky); }
-  body[data-state="error"] { --live: var(--coral); }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100dvh; height: 100dvh;
-    display: flex; flex-direction: column;
-    padding: max(env(safe-area-inset-top), 14px) 22px max(env(safe-area-inset-bottom), 18px);
-    background: var(--asphalt); color: var(--chalk);
-    font: 17px/1.4 ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100dvh;
+    height: 100dvh;
+    margin: 0;
+    padding: max(env(safe-area-inset-top), 16px) 20px max(env(safe-area-inset-bottom), 18px);
+    overflow: hidden;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 15% 10%, rgb(255 255 255 / 72%), transparent 28%),
+      radial-gradient(circle at 86% 82%, rgb(218 184 137 / 18%), transparent 24%),
+      var(--paper);
+    font: 16px/1.4 "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .bar { display: flex; justify-content: space-between; align-items: baseline; }
-  h1 { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: -.02em; color: var(--sodium); }
-  #clock { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fog); }
-  #state {
-    margin-top: 22px; font-size: 48px; font-weight: 800; line-height: 1.02;
-    letter-spacing: -.03em; color: var(--live); transition: color .3s;
+  .page {
+    width: min(100%, 500px);
+    height: 100%;
+    margin: auto;
+    display: flex;
+    flex-direction: column;
   }
-  #state.error { font-size: 26px; line-height: 1.2; letter-spacing: -.01em; }
-  header p { margin: 10px 0 0; max-width: 32ch; color: var(--fog); }
-  body:not([data-state="idle"]) header p { display: none; }
+  .bar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 {
+    margin: 0;
+    font: 900 clamp(28px, 9vw, 38px)/.82 Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+    letter-spacing: -.055em;
+  }
+  #clock {
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero { padding: 24px 0 10px; }
+  .signal {
+    height: 72px;
+    display: flex;
+    align-items: center;
+    gap: clamp(4px, 1.8vw, 8px);
+    overflow: hidden;
+    color: var(--orange);
+  }
+  .signal span {
+    width: 5px;
+    height: var(--h);
+    flex: 0 0 auto;
+    border-radius: 99px;
+    background: currentColor;
+    transform: scaleY(.18);
+    transition: transform .25s ease, background-color .25s ease;
+  }
+  .signal[data-state="idle"] span:nth-child(odd) { transform: scaleY(.3); }
+  .signal[data-state="thinking"] { color: var(--orange-deep); }
+  .signal[data-state="speaking"] { color: var(--ink); }
+  .signal[data-state="error"] { color: var(--orange-deep); }
+  .signal[data-state="listening"] span,
+  .signal[data-state="thinking"] span,
+  .signal[data-state="speaking"] span {
+    animation: run-signal 1.15s ease-in-out infinite alternate;
+    animation-delay: calc(var(--i) * -70ms);
+  }
+  .signal[data-state="thinking"] span { animation-duration: .72s; }
+  .signal[data-state="speaking"] span { animation-duration: .48s; }
+  @keyframes run-signal {
+    from { transform: scaleY(.22); }
+    to { transform: scaleY(1); }
+  }
+  #state {
+    margin: 10px 0 0;
+    max-width: 9ch;
+    font: 900 clamp(43px, 13vw, 63px)/.88 Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+    letter-spacing: -.045em;
+  }
+  #state.error { max-width: 15ch; font-size: clamp(28px, 8vw, 38px); line-height: .96; color: var(--orange-deep); }
+  #hint { margin: 14px 0 0; max-width: 32ch; color: var(--muted); font-size: 16px; }
+  body:not([data-state="idle"]) #hint { visibility: hidden; }
   #log {
-    flex: 1; min-height: 0; overflow-y: auto; margin: 22px 0 10px;
-    display: flex; flex-direction: column; gap: 14px;
+    flex: 1;
+    min-height: 0;
+    margin: 10px 0 8px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 10px 0;
     -webkit-overflow-scrolling: touch;
   }
-  .line { max-width: 30ch; font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
-  .line.agent { padding-left: 12px; border-left: 3px solid var(--sky); color: var(--chalk); }
-  .line.user { align-self: flex-end; text-align: right; font-size: 18px; color: var(--fog); }
-  .line.sys { font-size: 16px; color: var(--coral); }
-  .dock { display: grid; place-items: center; padding: 26px 0 6px; }
+  .line {
+    max-width: 31ch;
+    padding: 11px 13px;
+    border: 1px solid var(--line);
+    border-radius: 4px 16px 16px 16px;
+    background: rgb(255 250 240 / 68%);
+    font-size: 16px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .line.agent { border-left: 4px solid var(--orange); }
+  .line.user {
+    align-self: flex-end;
+    border-color: var(--ink);
+    border-radius: 16px 4px 16px 16px;
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .line.sys { color: var(--orange-deep); }
+  .dock {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: end;
+    gap: 10px;
+    padding-top: 13px;
+    border-top: 1px solid var(--line);
+  }
+  .run-note {
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .run-note:last-child { text-align: right; }
   #go {
-    position: relative; width: min(60vw, 250px); aspect-ratio: 1; border: 0; border-radius: 50%;
-    background: var(--sodium); color: var(--asphalt);
-    font: inherit; font-size: 30px; font-weight: 800; letter-spacing: -.02em;
-    cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-    transition: background-color .25s, color .25s, box-shadow .25s, transform .1s;
+    width: min(42vw, 176px);
+    aspect-ratio: 1;
+    border: 0;
+    border-radius: 18px;
+    background: var(--orange);
+    color: var(--ink);
+    box-shadow: inset 0 -8px 0 rgb(120 38 8 / 18%);
+    font: 900 clamp(25px, 7vw, 31px)/1 Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+    letter-spacing: -.025em;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform .12s ease, background-color .2s ease, color .2s ease;
   }
-  #go:active { transform: scale(.97); }
-  #go:focus-visible { outline: 3px solid var(--chalk); outline-offset: 6px; }
-  /* Live: the button becomes a ring in the current state colour. */
-  #go.stop { background: var(--kerb); color: var(--chalk); box-shadow: inset 0 0 0 7px var(--live); }
-  #go.stop::after {
-    content: ""; position: absolute; inset: 0; border-radius: 50%;
-    animation: breathe 2.4s ease-out infinite;
-  }
-  @keyframes breathe {
-    from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 50%, transparent); }
-    to { box-shadow: 0 0 0 24px transparent; }
+  #go:active { transform: translateY(3px); box-shadow: inset 0 -4px 0 rgb(120 38 8 / 18%); }
+  #go:focus-visible { outline: 3px solid var(--ink); outline-offset: 5px; }
+  #go.stop { background: var(--ink); color: var(--paper); box-shadow: inset 0 -8px 0 rgb(255 255 255 / 14%); }
+  #go.stop::before { content: ""; display: inline-block; width: .68em; height: .68em; margin-right: .28em; border-radius: 2px; background: var(--orange); }
+  @media (max-height: 680px) {
+    .hero { padding-top: 16px; }
+    .signal { height: 48px; }
+    #state { font-size: 40px; }
+    #hint { margin-top: 8px; }
+    #go { width: min(34vw, 140px); }
   }
   @media (prefers-reduced-motion: reduce) {
-    #go.stop::after { animation: none; }
-    #state, #go { transition: none; }
+    .signal span, #go { transition: none; }
+    .signal[data-state] span { animation: none; transform: scaleY(.6); }
   }
 </style>
 </head>
 <body data-state="idle">
-<header>
-  <div class="bar">
-    <h1>runny</h1>
-    <span id="clock" aria-label="Call length">0:00</span>
-  </div>
-  <div id="state" class="idle" role="status">Ready to connect</div>
-  <p>Headphones in. Tap Start and say what you want done. Keep this page open.</p>
-</header>
-<div id="log" role="log" aria-label="Conversation"></div>
-<div class="dock"><button id="go">Start</button></div>
-
+<main class="page">
+  <header>
+    <div class="bar">
+      <h1>runny</h1>
+      <span id="clock" aria-label="Call length">0:00</span>
+    </div>
+    <section class="hero" aria-labelledby="state">
+      <div id="signal" class="signal" data-state="idle" aria-hidden="true">
+        <span style="--h:20px;--i:1"></span><span style="--h:36px;--i:2"></span><span style="--h:55px;--i:3"></span><span style="--h:32px;--i:4"></span><span style="--h:70px;--i:5"></span><span style="--h:44px;--i:6"></span><span style="--h:30px;--i:7"></span><span style="--h:62px;--i:8"></span><span style="--h:39px;--i:9"></span><span style="--h:72px;--i:10"></span><span style="--h:34px;--i:11"></span><span style="--h:50px;--i:12"></span><span style="--h:24px;--i:13"></span>
+      </div>
+      <div id="state" class="idle" role="status" aria-live="polite">Ready to run</div>
+      <p id="hint">Headphones in. Tap start, tell Codex what to do, then put your phone away.</p>
+    </section>
+  </header>
+  <div id="log" role="log" aria-label="Conversation"></div>
+  <footer class="dock">
+    <p class="run-note">phone talks</p>
+    <button id="go">Start</button>
+    <p class="run-note">laptop works</p>
+  </footer>
+</main>
 <audio id="audio" autoplay playsinline></audio>
 <script type="module" src="client.js"></script>
 </body>

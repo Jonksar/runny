@@ -3,6 +3,7 @@ const logEl = document.getElementById("log");
 const button = document.getElementById("go");
 const audio = document.getElementById("audio");
 const clockEl = document.getElementById("clock");
+const signalEl = document.getElementById("signal");
 const url = new URL(location.href);
 const token =
   new URLSearchParams(url.hash.slice(1)).get("token") ??
@@ -18,6 +19,7 @@ function state(label, kind = "idle") {
   stateEl.textContent = label;
   stateEl.className = kind;
   document.body.dataset.state = kind;
+  signalEl.dataset.state = kind;
 }
 function tick(call) {
   const s = Math.floor((Date.now() - call.startedAt) / 1000);
@@ -31,7 +33,7 @@ function line(text, role = "sys") {
   while (logEl.children.length > 100) logEl.firstElementChild.remove();
   logEl.scrollTop = logEl.scrollHeight;
 }
-function stop(message = "Ready to connect", failed = false) {
+function stop(message = "Ready to run", failed = false) {
   const call = current;
   current = null;
   if (call) {

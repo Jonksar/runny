@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
 import { startRelay } from "../../dist/index.js";
 const browser = await chromium.launch({
@@ -13,6 +14,7 @@ const browser = await chromium.launch({
     "--autoplay-policy=no-user-gesture-required",
   ],
 });
+const screenshotDir = process.env.RUNNY_GIF_FRAMES;
 let relay;
 const upstream = await browser.newPage();
 let rejectOffer = false;
@@ -75,12 +77,25 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${origin}/#token=browser-test`);
+  if (screenshotDir) {
+    await mkdir(screenshotDir, { recursive: true });
+    await page.screenshot({ path: `${screenshotDir}/01-ready.png` });
+  }
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await page.waitForFunction(
     () => document.getElementById("state").textContent === "Connected",
     null,
     { timeout: 15_000 },
   );
+  assert.equal(
+    await page.locator("#signal span").first().evaluate(
+      (element) => getComputedStyle(element).animationName,
+    ),
+    "run-signal",
+    "the live waveform must animate after the phone connects",
+  );
+  if (screenshotDir)
+    await page.screenshot({ path: `${screenshotDir}/02-connected.png` });
   // Send only after the page reports Connected. A message sent the instant the
   // peer's end opened was occasionally lost on Linux Chromium (1 in 24 runs).
   await upstream.evaluate(() =>
@@ -95,6 +110,8 @@ try {
     ),
   );
   await page.getByText("Local voice connection verified.").waitFor();
+  if (screenshotDir)
+    await page.screenshot({ path: `${screenshotDir}/03-result.png` });
   await page.waitForFunction(
     () => document.querySelector("audio").currentTime > 0.2,
   );
@@ -119,7 +136,7 @@ try {
   if (process.env.RUNNY_SCREENSHOT)
     await page.screenshot({ path: process.env.RUNNY_SCREENSHOT });
   await page.getByRole("button", { name: "Stop", exact: true }).click();
-  assert.equal(await page.locator("#state").textContent(), "Ready to connect");
+  assert.equal(await page.locator("#state").textContent(), "Ready to run");
   await page.waitForFunction(
     () => document.querySelector("audio").srcObject === null,
   );
