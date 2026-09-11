@@ -77,6 +77,12 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${origin}/#token=browser-test`);
+  await page
+    .getByText(
+      "Headphones in. Keep this screen open, tap Start, then tell Codex what to do.",
+      { exact: true },
+    )
+    .waitFor();
   if (screenshotDir) {
     await mkdir(screenshotDir, { recursive: true });
     await page.screenshot({ path: `${screenshotDir}/01-ready.png` });
