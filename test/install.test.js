@@ -49,7 +49,6 @@ test("GitHub-style global install exposes the runny command", async (t) => {
     [
       "install",
       "--global",
-      "--install-links=true",
       "--prefix",
       prefix,
       `git+file://${source}`,
