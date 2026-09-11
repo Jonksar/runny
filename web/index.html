@@ -4,54 +4,93 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="theme-color" content="#0b0d10">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#151827">
 <link rel="manifest" href="manifest.webmanifest">
 <title>runny</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Night run under streetlights: read at arm's length, mid-stride. */
+  :root {
+    color-scheme: dark;
+    --asphalt: #151827;
+    --kerb: #262b47;
+    --chalk: #eef0f7;
+    --fog: #9aa0b8;
+    --sodium: #ffb547;
+    --mint: #6fe3b8;
+    --sky: #84b8ff;
+    --coral: #ff7a70;
+    --live: var(--fog);
+  }
+  body[data-state="listening"] { --live: var(--mint); }
+  body[data-state="thinking"] { --live: var(--sodium); }
+  body[data-state="speaking"] { --live: var(--sky); }
+  body[data-state="error"] { --live: var(--coral); }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100dvh; background: #0b0d10; color: #e8ecf1;
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; min-height: 100dvh; height: 100dvh;
     display: flex; flex-direction: column;
-    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+    padding: max(env(safe-area-inset-top), 14px) 22px max(env(safe-area-inset-bottom), 18px);
+    background: var(--asphalt); color: var(--chalk);
+    font: 17px/1.4 ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  header { padding: 20px 0 8px; }
-  h1 { margin: 0; font-size: 15px; letter-spacing: .18em; text-transform: uppercase; color: #a3adbb; font-weight: 600; }
+  .bar { display: flex; justify-content: space-between; align-items: baseline; }
+  h1 { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: -.02em; color: var(--sodium); }
+  #clock { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fog); }
   #state {
-    margin-top: 6px; font-size: 34px; font-weight: 700; letter-spacing: -.02em;
+    margin-top: 22px; font-size: 48px; font-weight: 800; line-height: 1.02;
+    letter-spacing: -.03em; color: var(--live); transition: color .3s;
   }
-  .idle { color: #a3adbb; } .listening { color: #4ade80; }
-  .thinking { color: #fbbf24; } .speaking { color: #60a5fa; } .error { color: #f87171; }
+  #state.error { font-size: 26px; line-height: 1.2; letter-spacing: -.01em; }
+  header p { margin: 10px 0 0; max-width: 32ch; color: var(--fog); }
+  body:not([data-state="idle"]) header p { display: none; }
   #log {
-    flex: 1; overflow-y: auto; margin: 16px 0; display: flex;
-    flex-direction: column; gap: 12px; -webkit-overflow-scrolling: touch;
+    flex: 1; min-height: 0; overflow-y: auto; margin: 22px 0 10px;
+    display: flex; flex-direction: column; gap: 14px;
+    -webkit-overflow-scrolling: touch;
   }
-  .line { font-size: 21px; line-height: 1.35; }
-  .line.user { color: #9aa4b2; }
-  .line.agent { color: #e8ecf1; }
-  .line.sys { color: #f87171; font-size: 15px; }
+  .line { max-width: 30ch; font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
+  .line.agent { padding-left: 12px; border-left: 3px solid var(--sky); color: var(--chalk); }
+  .line.user { align-self: flex-end; text-align: right; font-size: 18px; color: var(--fog); }
+  .line.sys { font-size: 16px; color: var(--coral); }
+  .dock { display: grid; place-items: center; padding: 26px 0 6px; }
   #go {
-    width: 100%; min-height: 88px; border: 0; border-radius: 12px;
-    background: #2563eb; color: #fff; font-size: 22px; font-weight: 650;
-    margin-bottom: 14px; -webkit-tap-highlight-color: transparent;
+    position: relative; width: min(60vw, 250px); aspect-ratio: 1; border: 0; border-radius: 50%;
+    background: var(--sodium); color: var(--asphalt);
+    font: inherit; font-size: 30px; font-weight: 800; letter-spacing: -.02em;
+    cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+    transition: background-color .25s, color .25s, box-shadow .25s, transform .1s;
   }
-  #go:disabled { background: #1f2937; color: #a3adbb; }
-  #go.stop { background: #b91c1c; }
-  #go:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
-  header p { color: #a3adbb; }
-  .line { overflow-wrap: anywhere; }
+  #go:active { transform: scale(.97); }
+  #go:focus-visible { outline: 3px solid var(--chalk); outline-offset: 6px; }
+  /* Live: the button becomes a ring in the current state colour. */
+  #go.stop { background: var(--kerb); color: var(--chalk); box-shadow: inset 0 0 0 7px var(--live); }
+  #go.stop::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%;
+    animation: breathe 2.4s ease-out infinite;
+  }
+  @keyframes breathe {
+    from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 50%, transparent); }
+    to { box-shadow: 0 0 0 24px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #go.stop::after { animation: none; }
+    #state, #go { transition: none; }
+  }
 </style>
 </head>
-<body>
+<body data-state="idle">
 <header>
-  <h1>runny</h1>
+  <div class="bar">
+    <h1>runny</h1>
+    <span id="clock" aria-label="Call length">0:00</span>
+  </div>
   <div id="state" class="idle" role="status">Ready to connect</div>
-  <p>Use headphones. Keep this page open while talking.</p>
+  <p>Headphones in. Tap Start and say what you want done. Keep this page open.</p>
 </header>
 <div id="log" role="log" aria-label="Conversation"></div>
-<button id="go">Start</button>
+<div class="dock"><button id="go">Start</button></div>
 
 <audio id="audio" autoplay playsinline></audio>
 <script type="module" src="client.js"></script>

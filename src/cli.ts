@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { startRelay, type RelayOptions } from "./relay.js";
 import { AppServerClient } from "./appserver.js";
 import { diagnose, renderChecks } from "./doctor.js";
+import { tailscaleLink } from "./phone.js";
 import { DEFAULT_MODEL } from "./session.js";
 import { REALTIME_METHODS, type RealtimeVoicesList } from "./types.js";
 const VERSION = "0.2.0";
@@ -25,7 +26,7 @@ Usage: runny [serve | doctor | voices] [options]
   -v, --version     Show version
 
 Install: npm install -g github:Jonksar/runny
-Phone: tailscale serve --bg 8765, then open its HTTPS URL with the printed token.
+Phone: runny prints a Tailscale link. Run tailscale serve --bg 8765 once if asked.
 ChatGPT login stays in Codex. Runny does not need an OpenAI API key.
 Doctor reads metadata only; it does not confirm live voice access.
 `;
@@ -123,9 +124,16 @@ async function main(argv: string[]): Promise<void> {
   console.log(
     `Open: http://${hostname}:${args.port}/#token=${encodeURIComponent(args.token)}`,
   );
-  console.log(
-    `Phone: tailscale serve --bg ${args.port}\nAppend /#token=${encodeURIComponent(args.token)} to its HTTPS URL.`,
-  );
+  const phone = await tailscaleLink(args.port, args.token);
+  if (!phone)
+    console.log(
+      `Phone: install Tailscale, run tailscale serve --bg ${args.port}, then open its HTTPS URL with /#token=${encodeURIComponent(args.token)}`,
+    );
+  else if (phone.served) console.log(`Phone: ${phone.url}`);
+  else
+    console.log(
+      `Phone: run tailscale serve --bg ${args.port} once, then open ${phone.url}`,
+    );
   let stopping = false;
   const stop = () => {
     if (stopping) return;
