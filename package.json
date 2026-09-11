@@ -20,8 +20,8 @@
   ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
-    "prepare": "npm run build",
     "dev": "tsc --watch",
+    "test:install": "node --test test/install.test.js",
     "test": "npm run build && node --test test/*.test.js",
     "typecheck": "tsc --noEmit",
     "start": "node dist/cli.js serve",
