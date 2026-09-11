@@ -1,4 +1,18 @@
 import { EventEmitter } from "node:events";
+/**
+ * Oldest Codex known to hold a WebRTC realtime call.
+ *
+ * The client sends an `openai-alpha: quicksilver=vN` header when opening one,
+ * and older builds send a value the backend rejects with
+ * `AVAS requires OpenAI-Alpha: quicksilver=v2`. Observed failing on 0.149.1
+ * and working on 0.153.4. The failure arrives asynchronously, after
+ * `thread/realtime/start` has already returned success, so it reads as a hang.
+ */
+export declare const MIN_REALTIME_CODEX = "0.153.0";
+/** Numeric dotted-version compare. Missing parts count as zero. */
+export declare function compareVersions(a: string, b: string): number;
+/** Pull a dotted version out of `codex --version` output. */
+export declare function parseVersion(output: string): string | null;
 export declare function defaultCodexBin(): string;
 /**
  * Newline-delimited JSON-RPC client for `codex app-server`.
