@@ -15,6 +15,17 @@ const browser = await chromium.launch({
   ],
 });
 const screenshotDir = process.env.RUNNY_GIF_FRAMES;
+let screenshotNumber = 0;
+
+async function captureFrame(page, label) {
+  if (!screenshotDir) return;
+  await mkdir(screenshotDir, { recursive: true });
+  screenshotNumber += 1;
+  await page.screenshot({
+    path: `${screenshotDir}/${String(screenshotNumber).padStart(2, "0")}-${label}.png`,
+  });
+}
+
 let relay;
 const upstream = await browser.newPage();
 let rejectOffer = false;
@@ -83,10 +94,7 @@ try {
       { exact: true },
     )
     .waitFor();
-  if (screenshotDir) {
-    await mkdir(screenshotDir, { recursive: true });
-    await page.screenshot({ path: `${screenshotDir}/01-ready.png` });
-  }
+  await captureFrame(page, "ready");
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await page.waitForFunction(
     () => document.getElementById("state").textContent === "Connected",
@@ -100,10 +108,33 @@ try {
     "run-signal",
     "the live waveform must animate after the phone connects",
   );
-  if (screenshotDir)
-    await page.screenshot({ path: `${screenshotDir}/02-connected.png` });
+  await captureFrame(page, "connected");
   // Send only after the page reports Connected. A message sent the instant the
   // peer's end opened was occasionally lost on Linux Chromium (1 in 24 runs).
+  await upstream.evaluate(() =>
+    window.events.send(
+      JSON.stringify({ type: "input_audio_buffer.speech_started" }),
+    ),
+  );
+  await page.getByText("Listening", { exact: true }).waitFor();
+  await captureFrame(page, "listening-a");
+  await page.waitForTimeout(180);
+  await captureFrame(page, "listening-b");
+  await upstream.evaluate(() =>
+    window.events.send(
+      JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "Fix the flaky test and tell me what changed.",
+      }),
+    ),
+  );
+  await page.getByText("Fix the flaky test and tell me what changed.").waitFor();
+  await captureFrame(page, "request");
+  await upstream.evaluate(() =>
+    window.events.send(JSON.stringify({ type: "response.created" })),
+  );
+  await page.getByText("Thinking", { exact: true }).waitFor();
+  await captureFrame(page, "thinking");
   await upstream.evaluate(() =>
     window.events.send(
       JSON.stringify({
@@ -116,8 +147,7 @@ try {
     ),
   );
   await page.getByText("Local voice connection verified.").waitFor();
-  if (screenshotDir)
-    await page.screenshot({ path: `${screenshotDir}/03-result.png` });
+  await captureFrame(page, "result");
   await page.waitForFunction(
     () => document.querySelector("audio").currentTime > 0.2,
   );
